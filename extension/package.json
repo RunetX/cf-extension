@@ -2,7 +2,7 @@
   "name": "cf-extension",
   "displayName": "Конструктор 1С",
   "description": "Навигатор метаданных 1С через самостоятельный model-server",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "RunetX",
   "license": "MIT",
   "repository": {
@@ -153,5 +153,6 @@
       "supported": false,
       "description": "Доступ к локальным файлам требует доверия рабочей области."
     }
-  }
+  },
+  "icon": "media/logo-k.png"
 }

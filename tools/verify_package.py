@@ -16,7 +16,7 @@ def inspect_vsix(path):
         binary = 'model-server.exe' if os.name == 'nt' else 'model-server'
         required = {'extension/package.json', 'extension/out/src/extension.js',
                     'extension/out/src/client.js', 'extension/out/src/navigator.js',
-                    'extension/media/constructor.svg', 'extension/bin/' + binary,
+                    'extension/media/constructor.svg', 'extension/media/logo-k.png', 'extension/bin/' + binary,
                     'extension/LICENSE.txt', 'extension/readme.md'}
         missing = required - names
         if missing:
@@ -28,6 +28,10 @@ def inspect_vsix(path):
             if any(p in forbidden for p in parts[1:] if not (p == 'src' and 'out' in parts)):
                 raise RuntimeError(f'Development/resource asset in VSIX: {name}')
         manifest = json.loads(archive.read('extension/package.json'))
+        if manifest.get('icon') != 'media/logo-k.png':
+            raise RuntimeError('The extension must use the Constructor brand logo')
+        if not archive.read('extension/media/logo-k.png').startswith(b'\x89PNG\r\n\x1a\n'):
+            raise RuntimeError('Invalid brand PNG')
         if manifest.get('main') != './out/src/extension.js':
             raise RuntimeError('Unexpected VSIX entry point')
         if len(archive.read('extension/bin/' + binary)) < 10000:
