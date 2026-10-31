@@ -4,6 +4,9 @@ import shutil
 import subprocess
 import sys
 
+# VSCE emits Unicode file trees even when the Windows parent pipe uses a legacy code page.
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 ROOT = Path(__file__).resolve().parent.parent
 HIDDEN = {'creationflags': subprocess.CREATE_NO_WINDOW} if sys.platform == 'win32' else {}
 

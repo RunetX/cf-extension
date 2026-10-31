@@ -1,20 +1,39 @@
-# Scaffold RPC v1
+# Model RPC v1
 
-Frames: Content-Length (UTF-8 byte count), CRLF CRLF, JSON-RPC 2.0 object. Max 16 MiB,
-header max 8192 bytes. EOF closes normally; malformed framing exits with stderr.
+JSON-RPC 2.0 stdio: `Content-Length` in UTF-8 bytes, CRLF CRLF, JSON body.
+Maximum frame 16 MiB, headers 8192 bytes. EOF exits normally. Invalid framing exits
+with stderr; stdout contains framed protocol only. Notifications receive no response.
 
-- initialize {} → {protocolVersion:1,capabilities:{open:true,tree:true}}
-- model.open {path:string,discardChanges?:boolean} → State
-- model.tree {parentId?:string} → Node[]
-- shutdown {} → null, flush then exit
-- notification model.changed: State after open
+- `initialize {}` → `{protocolVersion:1,capabilities:{open,tree,properties,edit,save,search,references,composition}}` (boolean values).
+- `model.open {path:string,discardChanges?:boolean}` → State; binary or root XML/directory.
+- `model.tree {parentId?:string}` → Node[]; lazy direct children.
+- `model.properties {id:string}` → `{id:string,properties:Property[]}`.
+- `model.setProperty {id:string,name:string,value:JSON,revision:number}` → State.
+- `model.search {query:string}` → Node[]; case-insensitive names/synonyms, blank yields [].
+- `model.references {id:string}` → Node[]; GUID occurrences via the library, no semantic BSL claims.
+- `model.composition {id:string}` → Node[]; owned direct children.
+- `model.save {path?:string,format?:'binary'|'xml',revision:number}` → State.
+- `model.close {discardChanges?:boolean}` → State.
+- `shutdown {}` → null, flush then exit.
+- `model.changed` notification params = State after successful open/setProperty/save/close.
 
-State = {loaded:boolean,sourcePath:string|null,dirty:boolean,revision:number}.
-Node = {id:string,label:string,kind:string,hasChildren:boolean,parentId?:string}.
-Root metadata id is the library Item header UUID; groups use group:<class> ids.
-Root tree returns the configuration and nonempty metadata groups. Children are lazy.
+State = `{loaded:boolean,sourcePath:string|null,dirty:boolean,revision:number}`.
+Node = `{id:string,label:string,kind:string,hasChildren:boolean,parentId?:string}`.
+Property = `{name:string,label:string,kind:'string'|'boolean'|'number'|'enum'|'readonly',value:JSON,editable:boolean,options?:string[]}`.
 
-Errors: -32700 JSON, -32600 request, -32601 method, -32602 params, -32000 no model,
--32003 file/format. Request ids survive unchanged; notifications have no response.
-Opening increments revision, and a rejected open preserves the existing state.
-Dirty editing guards and remaining protocol methods belong to the navigator increment.
+Object ids use stable library UUIDs; groups use `group:<class>`. Unmapped reference
+records use `record:<entry>` ids and are displayed without an editable palette.
+Name/Synonym/Comment on Configuration/Catalog/Attribute and Catalog.Hierarchical
+are supported. Synonym edits Russian while retaining other languages. Complex or
+conditionally unavailable properties are read-only; unknown ids/properties fail.
+
+Revision is monotonically increasing for successful open/edit/save/close. Stale or
+invalid edits, failed open and failed saves preserve previous model/state. Binary
+save uses a unique create_new sibling temp with PID/counter, sync and atomic rename.
+XML export stages into its own temporary directory, requires a new/empty destination
+and rejects incomplete reports. XML source save needs an explicit destination.
+Dirty open/close requires explicit `discardChanges:true`.
+
+Errors: -32700 JSON, -32600 request, -32601 method, -32602 params/invalid edit,
+-32000 no model, -32001 dirty guard, -32002 revision conflict, -32003 file/format.
+Request ids are preserved. Errors do not issue model.changed or clear dirty state.

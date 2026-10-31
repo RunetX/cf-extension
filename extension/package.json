@@ -1,7 +1,150 @@
 {
-  "name": "cf-extension", "displayName": "Конструктор 1С", "description": "Навигатор метаданных 1С через самостоятельный model-server", "version": "0.1.0", "publisher": "RunetX", "license": "MIT", "repository": {"type":"git","url":"https://github.com/RunetX/cf-extension"},
-  "engines": {"vscode": "^1.95.0", "node": ">=22"}, "categories": ["Other"], "main": "./out/src/extension.js", "activationEvents": ["onCommand:cfExtension.open"],
-  "contributes": {"commands": [{"command":"cfExtension.open","title":"Конструктор: Открыть конфигурацию"}], "configuration":{"title":"Конструктор","properties":{"cfExtension.serverPath":{"type":"string","default":"","description":"Явный путь к model-server для разработки"}}}},
-  "scripts": {"compile":"tsc -p .", "test":"npm run compile && node --test out/test/*.test.js", "test:host":"npm run compile && node out/test/host-runner.js"},
-  "devDependencies": {"typescript":"^5.0.0","@types/vscode":"~1.95.0","@types/node":"^22.0.0","@vscode/test-electron":"^2.0.0","@vscode/vsce":"^3.0.0"}
+  "name": "cf-extension",
+  "displayName": "Конструктор 1С",
+  "description": "Навигатор метаданных 1С через самостоятельный model-server",
+  "version": "0.1.0",
+  "publisher": "RunetX",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RunetX/cf-extension"
+  },
+  "engines": {
+    "vscode": "^1.95.0",
+    "node": ">=22"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/src/extension.js",
+  "activationEvents": [
+    "onView:cfExtension.metadata",
+    "onView:cfExtension.properties",
+    "onCommand:cfExtension.open"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "title": "Конструктор: Открыть конфигурацию",
+        "icon": "$(folder-open)",
+        "command": "cfExtension.open"
+      },
+      {
+        "title": "Конструктор: Сохранить",
+        "icon": "$(save)",
+        "command": "cfExtension.save"
+      },
+      {
+        "command": "cfExtension.saveAs",
+        "title": "Конструктор: Сохранить как / XML"
+      },
+      {
+        "title": "Конструктор: Поиск объекта",
+        "icon": "$(search)",
+        "command": "cfExtension.search"
+      },
+      {
+        "command": "cfExtension.findReferences",
+        "title": "Конструктор: Найти ссылки GUID"
+      },
+      {
+        "command": "cfExtension.composition",
+        "title": "Конструктор: Состав объекта"
+      },
+      {
+        "command": "cfExtension.select",
+        "title": "Конструктор: Свойства"
+      },
+      {
+        "command": "cfExtension.close",
+        "title": "Конструктор: Закрыть конфигурацию"
+      }
+    ],
+    "configuration": {
+      "title": "Конструктор",
+      "properties": {
+        "cfExtension.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Явный путь к model-server для разработки"
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "title": "Конструктор",
+          "icon": "media/constructor.svg",
+          "id": "cfExtension"
+        }
+      ]
+    },
+    "views": {
+      "cfExtension": [
+        {
+          "id": "cfExtension.metadata",
+          "name": "Метаданные"
+        },
+        {
+          "name": "Свойства",
+          "id": "cfExtension.properties",
+          "type": "webview"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "contents": "[Открыть конфигурацию](command:cfExtension.open)",
+        "view": "cfExtension.metadata",
+        "when": "!cfExtension.loaded"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "when": "view == cfExtension.metadata",
+          "group": "navigation",
+          "command": "cfExtension.open"
+        },
+        {
+          "when": "view == cfExtension.metadata && cfExtension.loaded",
+          "group": "navigation",
+          "command": "cfExtension.save"
+        },
+        {
+          "when": "view == cfExtension.metadata && cfExtension.loaded",
+          "group": "navigation",
+          "command": "cfExtension.search"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "cfExtension.findReferences",
+          "when": "view == cfExtension.metadata && viewItem == metadata"
+        },
+        {
+          "command": "cfExtension.composition",
+          "when": "view == cfExtension.metadata && viewItem == metadata"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "test": "npm run compile && node --test out/test/*.test.js",
+    "test:host": "npm run compile && node out/test/host-runner.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/vscode": "~1.95.0",
+    "@types/node": "^22.0.0",
+    "@vscode/test-electron": "^2.0.0",
+    "@vscode/vsce": "^3.0.0"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Доступ к локальным файлам требует доверия рабочей области."
+    }
+  }
 }
