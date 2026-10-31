@@ -1,0 +1,7 @@
+{
+  "name": "cf-extension", "displayName": "Конструктор 1С", "description": "Навигатор метаданных 1С через самостоятельный model-server", "version": "0.1.0", "publisher": "RunetX", "license": "MIT", "repository": {"type":"git","url":"https://github.com/RunetX/cf-extension"},
+  "engines": {"vscode": "^1.95.0", "node": ">=22"}, "categories": ["Other"], "main": "./out/src/extension.js", "activationEvents": ["onCommand:cfExtension.open"],
+  "contributes": {"commands": [{"command":"cfExtension.open","title":"Конструктор: Открыть конфигурацию"}], "configuration":{"title":"Конструктор","properties":{"cfExtension.serverPath":{"type":"string","default":"","description":"Явный путь к model-server для разработки"}}}},
+  "scripts": {"compile":"tsc -p .", "test":"npm run compile && node --test out/test/*.test.js", "test:host":"npm run compile && node out/test/host-runner.js"},
+  "devDependencies": {"typescript":"^5.0.0","@types/vscode":"~1.95.0","@types/node":"^22.0.0","@vscode/test-electron":"^2.0.0","@vscode/vsce":"^3.0.0"}
+}
