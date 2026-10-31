@@ -507,3 +507,155 @@ fn dependent_property_is_readonly_and_rejected() {
     s.ok("shutdown", json!({}));
     std::fs::remove_dir_all(dir).unwrap();
 }
+#[test]
+fn selected_xml_open_preserves_state_on_failure_and_roundtrips_roots() {
+    let dir =
+        std::env::temp_dir().join(format!("cf-extension-selected-xml-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let fixture = dir.join("synthetic.cf");
+    assert!(server_command()
+        .args(["--generate-fixture", fixture.to_str().unwrap()])
+        .status()
+        .unwrap()
+        .success());
+    let mut s = Session::new();
+    let state = s.ok("model.open", json!({"path":fixture}));
+    let xml = dir.join("xml");
+    s.ok(
+        "model.save",
+        json!({"path":xml,"format":"xml","revision":state["revision"]}),
+    );
+    let malformed = xml.join("Malformed.xml");
+    let unrelated = xml.join("Unrelated.xml");
+    let dump_info = xml.join("ConfigDumpInfo.xml");
+    std::fs::write(&dump_info, b"<ConfigDumpInfo/>").unwrap();
+    let paths = [
+        xml.join("MISSING.xml"),
+        malformed,
+        unrelated,
+        dump_info,
+        xml.join("Catalogs/Products.xml"),
+    ];
+    for mode in ["empty", "clean", "dirty"] {
+        for path in &paths {
+            let mut before = s.ok("model.close", json!({"discardChanges":true}));
+            let mut id = Value::Null;
+            if mode != "empty" {
+                before = s.ok("model.open", json!({"path":fixture}));
+                id = s.ok("model.tree", json!({}))[0]["id"].clone();
+                if mode == "dirty" {
+                    before = s.ok("model.setProperty", json!({"id":id,"name":"Comment","value":"unsaved XML failure sentinel","revision":before["revision"]}));
+                }
+            }
+            let tree = if mode != "empty" {
+                Some(s.ok("model.tree", json!({})))
+            } else {
+                None
+            };
+            let props = if mode != "empty" {
+                Some(s.ok("model.properties", json!({"id":id})))
+            } else {
+                None
+            };
+            if path.ends_with("Malformed.xml") {
+                std::fs::write(path, b"<broken").unwrap();
+            } else if path.ends_with("Unrelated.xml") {
+                std::fs::write(path, b"<Unrelated/>").unwrap();
+            }
+            let response = s.call("model.open", json!({"path":path,"discardChanges":true}));
+            assert_eq!(
+                response["error"]["code"],
+                -32003,
+                "{mode}: {}: {response}",
+                path.display()
+            );
+            if path.ends_with("Malformed.xml") || path.ends_with("Unrelated.xml") {
+                std::fs::remove_file(path).unwrap();
+            }
+            if let Some(tree) = &tree {
+                assert_eq!(&s.ok("model.tree", json!({})), tree);
+                assert_eq!(s.ok("model.properties", json!({"id":id})), props.unwrap());
+                let after = if mode == "dirty" {
+                    assert_eq!(s.call("model.close", json!({}))["error"]["code"], -32001);
+                    s.ok("model.setProperty", json!({"id":id,"name":"Comment","value":"still unsaved","revision":before["revision"]}))
+                } else {
+                    s.ok("model.save", json!({"revision":before["revision"]}))
+                };
+                before["revision"] = json!(before["revision"].as_u64().unwrap() + 1);
+                assert_eq!(after, before);
+            } else {
+                assert_eq!(s.call("model.tree", json!({}))["error"]["code"], -32000);
+                let after = s.ok("model.close", json!({}));
+                before["revision"] = json!(before["revision"].as_u64().unwrap() + 1);
+                assert_eq!(after, before);
+            }
+        }
+    }
+    s.ok(
+        "model.open",
+        json!({"path":xml.join("Configuration.xml"),"discardChanges":true}),
+    );
+    assert_eq!(
+        s.ok("model.tree", json!({}))[0]["label"],
+        "NavigatorSynthetic"
+    );
+    let epf = dir.join("synthetic.epf");
+    std::fs::write(
+        &epf,
+        cf_unwrapper::xml::imp::new_external("SyntheticProcessor").unwrap(),
+    )
+    .unwrap();
+    s.ok("model.open", json!({"path":epf}));
+    let external = dir.join("external");
+    let cfg = cf_unwrapper::meta::Config::open(&std::fs::read(&epf).unwrap()).unwrap();
+    let report = cf_unwrapper::xml::export(&cfg, &external).unwrap();
+    assert!(report.errors.is_empty());
+    assert!(report.skipped.is_empty());
+    let root = external.join("SyntheticProcessor.xml");
+    assert!(root.is_file());
+    s.ok("model.open", json!({"path":root}));
+    assert_eq!(
+        s.ok("model.tree", json!({}))[0]["label"],
+        "SyntheticProcessor"
+    );
+    s.ok("shutdown", json!({}));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn external_processor_xml_save_roundtrip() {
+    let dir =
+        std::env::temp_dir().join(format!("cf-extension-epf-xml-save-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let epf = dir.join("synthetic.epf");
+    std::fs::write(
+        &epf,
+        cf_unwrapper::xml::imp::new_external("XmlSaveProcessor").unwrap(),
+    )
+    .unwrap();
+    let mut s = Session::new();
+    let state = s.ok("model.open", json!({"path":epf}));
+    let id = s.ok("model.tree", json!({}))[0]["id"].clone();
+    let state = s.ok("model.setProperty", json!({"id":id,"name":"Comment","value":"EPF XML save roundtrip","revision":state["revision"]}));
+    let expected = s.ok("model.properties", json!({"id":id}));
+    let xml = dir.join("xml");
+    let saved = s.ok(
+        "model.save",
+        json!({"path":xml,"format":"xml","revision":state["revision"]}),
+    );
+    assert_eq!(saved["dirty"], false);
+    assert_eq!(saved["sourcePath"], json!(xml));
+    assert_eq!(
+        saved["revision"].as_u64().unwrap(),
+        state["revision"].as_u64().unwrap() + 1
+    );
+    assert!(!xml.join("Configuration.xml").exists());
+    let root = xml.join("XmlSaveProcessor.xml");
+    assert!(root.is_file());
+    s.ok("model.open", json!({"path":root}));
+    assert_eq!(s.ok("model.properties", json!({"id":id})), expected);
+    let tree = s.ok("model.tree", json!({}));
+    assert_eq!(tree[0]["label"], "XmlSaveProcessor");
+    s.ok("shutdown", json!({}));
+    std::fs::remove_dir_all(dir).unwrap();
+}

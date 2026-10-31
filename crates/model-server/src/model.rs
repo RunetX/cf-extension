@@ -457,16 +457,31 @@ fn is_xml(path: &Path) -> bool {
 }
 fn open(path: &Path) -> std::result::Result<Config, String> {
     if is_xml(path) {
-        let dir = if path.is_dir() {
+        let source = if path.is_dir() {
             path
         } else {
-            path.parent().ok_or("XML has no parent")?
+            let contents = fs::read_to_string(path).map_err(|e| e.to_string())?;
+            let document = xml::imp::dom::parse(&contents)?;
+            if document.name != "MetaDataObject" {
+                return Err("XML: выберите корневой файл метаданных".into());
+            }
+            if document.child("ExternalDataProcessor").is_some() {
+                path
+            } else if document.child("Configuration").is_some()
+                && path
+                    .file_name()
+                    .is_some_and(|name| name == "Configuration.xml")
+            {
+                path.parent().ok_or("XML has no parent")?
+            } else {
+                return Err("XML: выберите Configuration.xml или корень внешней обработки".into());
+            }
         };
-        let imported = xml::imp::import(dir, None)?;
+        let imported = xml::imp::import(source, None)?;
         if !imported.refused.is_empty() {
             return Err(format!("XML import refused: {:?}", imported.refused));
         }
-        Config::open(&xml::imp::cf(dir, &imported)?)
+        Config::open(&xml::imp::cf(source, &imported)?)
     } else {
         Config::open(&fs::read(path).map_err(|e| e.to_string())?)
     }
@@ -519,7 +534,12 @@ fn export(cfg: &Config, path: &Path) -> std::result::Result<(), String> {
                 report.errors, report.skipped
             ));
         }
-        open(&tmp)?;
+        let root = if cfg.root.kind == "Configuration" {
+            tmp.clone()
+        } else {
+            tmp.join(format!("{}.xml", cfg.root.header.name))
+        };
+        open(&root)?;
         if path.exists() {
             fs::remove_dir(path).map_err(|e| e.to_string())?;
         }
