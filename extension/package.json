@@ -2,7 +2,7 @@
   "name": "cf-extension",
   "displayName": "Конструктор 1С",
   "description": "Навигатор метаданных 1С через самостоятельный model-server",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "RunetX",
   "license": "MIT",
   "repository": {
@@ -94,7 +94,7 @@
     },
     "viewsWelcome": [
       {
-        "contents": "[Открыть конфигурацию](command:cfExtension.open)",
+        "contents": "Откройте конфигурацию CF, CFE, EPF или XML.\n\n[Открыть конфигурацию](command:cfExtension.open)",
         "view": "cfExtension.metadata",
         "when": "!cfExtension.loaded"
       }

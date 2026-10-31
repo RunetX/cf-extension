@@ -30,7 +30,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
         current = state;
         tree.refresh();
         treeView.title = state.dirty ? 'Метаданные ●' : 'Метаданные';
-        treeView.message = state.loaded ? (state.dirty ? 'Есть несохранённые изменения' : undefined) : 'Откройте конфигурацию CF, CFE, EPF или XML.';
+        // A message suppresses viewsWelcome, including its Open Configuration button.
+        treeView.message = state.loaded && state.dirty ? 'Есть несохранённые изменения' : undefined;
         void vscode.commands.executeCommand('setContext', 'cfExtension.loaded', state.loaded);
         void vscode.commands.executeCommand('setContext', 'cfExtension.dirty', state.dirty);
         if (state.loaded) {
