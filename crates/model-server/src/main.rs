@@ -1,5 +1,6 @@
 mod fixture;
 mod model;
+mod tree;
 use model::Model;
 use serde_json::{json, Value};
 use std::{

@@ -86,7 +86,20 @@ fn rpc_scaffold() {
     let tree = call(&mut input, &mut output, 4, "model.tree", json!({}));
     let nodes = tree["result"].as_array().unwrap();
     assert!(nodes.iter().any(|n| n["label"] == "NavigatorSynthetic"));
-    let group = nodes.iter().find(|n| n["kind"] == "group").unwrap();
+    assert_eq!(nodes.len(), 1, "only the configuration is a top-level node");
+    let groups = call(
+        &mut input,
+        &mut output,
+        40,
+        "model.tree",
+        json!({"parentId":nodes[0]["id"]}),
+    );
+    let group = groups["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == "group:Catalog")
+        .unwrap();
     let objects = call(
         &mut input,
         &mut output,
@@ -658,4 +671,114 @@ fn external_processor_xml_save_roundtrip() {
     assert_eq!(tree[0]["label"], "XmlSaveProcessor");
     s.ok("shutdown", json!({}));
     std::fs::remove_dir_all(dir).unwrap();
+}
+#[test]
+fn configurator_hierarchy_and_parent_navigation() {
+    let dir = std::env::temp_dir().join(format!("cf-extension-hierarchy-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("synthetic.cf");
+    assert!(server_command()
+        .args(["--generate-fixture", file.to_str().unwrap()])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let mut s = Session::new();
+    s.ok("model.open", json!({"path":file}));
+    let roots = s.ok("model.tree", json!({}));
+    assert_eq!(roots.as_array().unwrap().len(), 1);
+    let root = &roots[0];
+    assert_eq!(root["kind"], "Configuration");
+    assert_eq!(root["hasChildren"], true);
+    let groups = s.ok("model.tree", json!({"parentId":root["id"]}));
+    assert_eq!(groups[0]["label"], "Общие");
+    assert_eq!(groups[0]["parentId"], root["id"]);
+    assert!(groups
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|n| n["id"] == "group:Constant" && n["hasChildren"] == false));
+    let common = s.ok("model.tree", json!({"parentId":"common"}));
+    assert_eq!(common[0]["label"], "Подсистемы");
+    assert!(common
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|n| n["id"] == "group:CommonModule"));
+    assert!(!groups
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|n| n["id"] == "group:CommonModule"));
+    let documents = s.ok("model.tree", json!({"parentId":"group:Document"}));
+    assert!(documents
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|n| n["id"] == "group:DocumentNumerator"));
+    let catalogs = s.ok("model.tree", json!({"parentId":"group:Catalog"}));
+    let catalog = catalogs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["label"] == "Products")
+        .unwrap();
+    let collections = s.ok("model.tree", json!({"parentId":catalog["id"]}));
+    let labels: Vec<_> = collections
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["label"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        labels,
+        vec!["Реквизиты", "Табличные части", "Формы", "Команды", "Макеты"]
+    );
+    let attrs = s.ok("model.tree", json!({"parentId":collections[0]["id"]}));
+    assert_eq!(attrs.as_array().unwrap().len(), 1);
+    assert_eq!(attrs[0]["parentId"], collections[0]["id"]);
+    assert_eq!(attrs[0]["metadataKind"], "Attribute");
+    let lookup = s.ok("model.node", json!({"id":collections[0]["id"]}));
+    assert_eq!(lookup, collections[0]);
+    assert_eq!(lookup["parentId"], catalog["id"]);
+    assert_eq!(
+        s.ok("model.node", json!({"id":"group:Catalog"}))["parentId"],
+        root["id"]
+    );
+    let forms = collections
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["label"] == "Формы")
+        .unwrap();
+    assert_eq!(forms["hasChildren"], false);
+    assert!(s
+        .ok("model.tree", json!({"parentId":forms["id"]}))
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        s.call("model.node", json!({"id":"group:NotAClass"}))["error"]["code"],
+        -32602
+    );
+    let external = dir.join("external.epf");
+    std::fs::write(
+        &external,
+        cf_unwrapper::xml::imp::new_external("ExternalTree").unwrap(),
+    )
+    .unwrap();
+    s.ok("model.open", json!({"path":external}));
+    let external_root = s.ok("model.tree", json!({}));
+    assert_eq!(external_root.as_array().unwrap().len(), 1);
+    let children = s.ok("model.tree", json!({"parentId":external_root[0]["id"]}));
+    assert_eq!(children[0]["label"], "Реквизиты");
+    assert_eq!(children.as_array().unwrap().len(), 4);
+    assert_eq!(
+        s.call("model.node", json!({"id":"common"}))["error"]["code"],
+        -32602
+    );
+    drop(s);
+    let canonical = dir.canonicalize().unwrap();
+    assert!(canonical.starts_with(std::env::temp_dir().canonicalize().unwrap()));
+    std::fs::remove_dir_all(canonical).unwrap();
 }

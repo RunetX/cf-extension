@@ -3,9 +3,11 @@ import * as path from 'node:path';
 import { RpcClient } from './client';
 import { InitializeResult, ModelNode, ModelState, PropertyResult } from './protocol';
 import { MetadataTree, PropertyPalette } from './navigator';
+import { TreeIcons } from './treeIcons';
 export interface ExtensionApi {
     open(path: string): Promise<ModelState>;
     tree(parentId?: string): Promise<ModelNode[]>;
+    node(id: string): Promise<ModelNode>;
     properties(id: string): Promise<PropertyResult>;
     setProperty(id: string, name: string, value: unknown, revision: number): Promise<ModelState>;
     search(query: string): Promise<ModelNode[]>;
@@ -20,12 +22,14 @@ interface Destination {
     path: string;
     format: 'binary' | 'xml';
 }
-export function activate(context: vscode.ExtensionContext): ExtensionApi {
+export async function activate(context: vscode.ExtensionContext): Promise<ExtensionApi> {
     let client: RpcClient | undefined;
     let current: ModelState = { loaded: false, sourcePath: null, dirty: false, revision: 0 };
     let selected: ModelNode | undefined;
     const output = vscode.window.createOutputChannel('Конструктор');
     context.subscriptions.push(output);
+    const icons = new TreeIcons(context, output);
+    await icons.reload();
     const update = (state: ModelState): ModelState => { if (state.revision >= current.revision) {
         current = state;
         tree.refresh();
@@ -75,18 +79,19 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
     async function request<T>(method: string, params: unknown = {}): Promise<T> { return (await connect()).request<T>(method, params); }
     const api: ExtensionApi = {
         async open(filePath) { return update(await request<ModelState>('model.open', { path: filePath })); },
-        tree(parentId) { return request('model.tree', parentId ? { parentId } : {}); }, properties(id) { return request('model.properties', { id }); },
+        tree(parentId) { return request('model.tree', parentId ? { parentId } : {}); }, node(id) { return request('model.node', { id }); }, properties(id) { return request('model.properties', { id }); },
         async setProperty(id, name, value, revision) { return update(await request<ModelState>('model.setProperty', { id, name, value, revision })); }, search(query) { return request('model.search', { query }); }, references(id) { return request('model.references', { id }); }, composition(id) { return request('model.composition', { id }); },
         async save(filePath, format) { return update(await request<ModelState>('model.save', { ...(filePath ? { path: filePath } : {}), ...(format ? { format } : {}), revision: current.revision })); },
         async close(discardChanges) { return update(await request<ModelState>('model.close', { discardChanges })); }, state() { return { ...current }; }, dispose() { const old = client; client = undefined; old?.dispose(); }
     };
-    const tree = new MetadataTree(api);
+    const tree = new MetadataTree(api, icons);
+    context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => { if (event.affectsConfiguration('cfExtension.platformPath')) { void icons.reload().then(() => tree.refresh()); } }));
     const treeView = vscode.window.createTreeView('cfExtension.metadata', { treeDataProvider: tree, showCollapseAll: true });
     const palette = new PropertyPalette(api);
     context.subscriptions.push(tree, treeView, { dispose: () => api.dispose() }, vscode.window.registerWebviewViewProvider('cfExtension.properties', palette));
     async function select(value?: ModelNode | string): Promise<void> { const id = typeof value === 'string' ? value : value?.id; if (!id) {
         return;
-    } const token = current.revision; const node = typeof value === 'object' ? value : (await api.search('')).find(n => n.id === id) ?? { id, label: id, kind: 'metadata', hasChildren: false }; if (node.kind === 'group') {
+    } const token = current.revision; const node = typeof value === 'object' ? value : await api.node(id); if (node.kind === 'group') {
         return;
     } if (node.kind === 'record') {
         void vscode.window.showInformationMessage('Ссылка найдена в записи контейнера; отдельная палитра для неё недоступна.');

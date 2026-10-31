@@ -1,8 +1,10 @@
 import * as vscode from 'vscode';
 import * as crypto from 'node:crypto';
+import { TreeIcons } from './treeIcons';
 import { ModelNode, ModelProperty, ModelState, PropertyResult } from './protocol';
 export interface NavigatorActions {
     tree(parentId?: string): Promise<ModelNode[]>;
+    node(id: string): Promise<ModelNode>;
     properties(id: string): Promise<PropertyResult>;
     setProperty(id: string, name: string, value: unknown, revision: number): Promise<ModelState>;
     state(): ModelState;
@@ -12,9 +14,18 @@ export class MetadataTree implements vscode.TreeDataProvider<ModelNode> {
     readonly onDidChangeTreeData = this.changed.event;
     private parents = new Map<string, string>();
     private nodes = new Map<string, ModelNode>();
-    constructor(private readonly api: NavigatorActions) { }
+    constructor(private readonly api: NavigatorActions, private readonly icons: TreeIcons) { }
     refresh(): void { this.parents.clear(); this.nodes.clear(); this.changed.fire(undefined); }
-    getTreeItem(n: ModelNode): vscode.TreeItem { const item = new vscode.TreeItem(n.label, n.hasChildren ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None); item.id = n.id; item.description = n.kind; item.tooltip = `${n.label} (${n.kind})`; item.contextValue = n.kind === 'group' ? 'group' : n.kind === 'record' ? 'record' : 'metadata'; item.command = { command: 'cfExtension.select', title: 'Свойства', arguments: [n] }; item.iconPath = new vscode.ThemeIcon(n.kind === 'group' ? 'folder' : 'symbol-class'); return item; }
+    getTreeItem(n: ModelNode): vscode.TreeItem {
+        const state = n.hasChildren ? (!n.parentId ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed) : vscode.TreeItemCollapsibleState.None;
+        const item = new vscode.TreeItem(n.label, state);
+        item.id = n.id;
+        item.tooltip = n.typeLabel ? `${n.label} — ${n.typeLabel}` : n.label;
+        item.contextValue = n.kind === 'group' ? 'group' : n.kind === 'record' ? 'record' : 'metadata';
+        if (n.kind !== 'group') item.command = { command: 'cfExtension.select', title: 'Свойства', arguments: [n] };
+        item.iconPath = this.icons.get(n);
+        return item;
+    }
     async getChildren(n?: ModelNode): Promise<ModelNode[]> { if (!this.api.state().loaded) {
         return [];
     } try {
@@ -31,23 +42,13 @@ export class MetadataTree implements vscode.TreeDataProvider<ModelNode> {
         void vscode.window.showErrorMessage(`Не удалось загрузить дерево: ${String(error)}`);
         return [];
     } }
-    async getParent(n: ModelNode): Promise<ModelNode | undefined> { const parent = n.parentId ?? this.parents.get(n.id); if (!parent) {
-        return undefined;
-    } if (this.nodes.has(parent)) {
-        return this.nodes.get(parent);
-    } await this.getChildren(); if (this.nodes.has(parent)) {
-        return this.nodes.get(parent);
-    } const search = async (nodes: ModelNode[]): Promise<ModelNode | undefined> => { for (const node of nodes) {
-        if (node.id === parent) {
-            return node;
-        }
-        if (node.hasChildren) {
-            const found = await search(await this.getChildren(node));
-            if (found) {
-                return found;
-            }
-        }
-    } return undefined; }; return search(await this.getChildren()); }
+    async getParent(n: ModelNode): Promise<ModelNode | undefined> {
+        const parent = n.parentId ?? this.parents.get(n.id);
+        if (!parent) return undefined;
+        let node = this.nodes.get(parent);
+        if (!node) { node = await this.api.node(parent); this.nodes.set(parent, node); }
+        return node;
+    }
     dispose(): void { this.changed.dispose(); }
 }
 export class PropertyPalette implements vscode.WebviewViewProvider {

@@ -69,7 +69,7 @@ impl Model {
         }
         match method {
             "initialize" => Ok(
-                json!({"protocolVersion":1,"capabilities":{"open":true,"tree":true,"properties":true,"edit":true,"save":true,"search":true,"references":true,"composition":true}}),
+                json!({"protocolVersion":1,"capabilities":{"open":true,"tree":true,"node":true,"properties":true,"edit":true,"save":true,"search":true,"references":true,"composition":true}}),
             ),
             "shutdown" => Ok(Value::Null),
             "model.open" => {
@@ -96,28 +96,15 @@ impl Model {
                 if p.get("parentId").is_some_and(|v| !v.is_string()) {
                     return Err(bad("parentId must be a string"));
                 }
-                let nodes = match p.get("parentId").and_then(Value::as_str) {
-                    None => {
-                        let mut v = vec![node(&cfg.root, None)];
-                        v.extend(cfg.groups.iter().map(|g|json!({"id":format!("group:{}",g.class),"label":g.title,"kind":"group","hasChildren":!g.items.is_empty()})));
-                        v
-                    }
-                    Some(id) if id.starts_with("group:") => cfg
-                        .groups
-                        .iter()
-                        .find(|g| Some(g.class) == id.strip_prefix("group:"))
-                        .ok_or_else(|| bad("Неизвестная группа"))?
-                        .items
-                        .iter()
-                        .map(|i| node(i, Some(id)))
-                        .collect(),
-                    Some(id) => item(cfg, id)?
-                        .children
-                        .iter()
-                        .map(|i| node(i, Some(id)))
-                        .collect(),
-                };
-                Ok(json!(nodes))
+                Ok(json!(crate::tree::children(
+                    cfg,
+                    p.get("parentId").and_then(Value::as_str)
+                )
+                .map_err(bad)?))
+            }
+            "model.node" => {
+                let cfg = self.cfg()?;
+                crate::tree::node(cfg, text(p, "id")?).map_err(bad)
             }
             "model.composition" => {
                 let cfg = self.cfg()?;
@@ -125,7 +112,7 @@ impl Model {
                 Ok(json!(item(cfg, id)?
                     .children
                     .iter()
-                    .map(|i| node(i, Some(id)))
+                    .map(|i| crate::tree::from_structural(i, Some(id)))
                     .collect::<Vec<_>>()))
             }
             "model.search" => {
@@ -138,7 +125,7 @@ impl Model {
                     .into_iter()
                     .filter(|(i, _)| i.header.name.to_lowercase().contains(&q)
                         || i.header.synonym.to_lowercase().contains(&q))
-                    .map(|(i, parent)| node(i, parent.as_deref()))
+                    .map(|(i, parent)| crate::tree::from_structural(i, parent.as_deref()))
                     .collect::<Vec<_>>()))
             }
             "model.references" => {
@@ -166,7 +153,7 @@ impl Model {
                     };
                     if let Ok(i) = item(cfg, &owner) {
                         if ids.insert(i.header.id.clone()) {
-                            nodes.push(node(i, parent_of(cfg, &i.header.id).as_deref()));
+                            nodes.push(crate::tree::object_node(cfg, i));
                         }
                     } else if ids.insert(entry.clone()) {
                         nodes.push(json!({"id":format!("record:{entry}"),"label":xml::edit::whose(cfg,&entry),"kind":"record","hasChildren":false}));
@@ -412,13 +399,6 @@ fn edit(cfg: &mut Config, id: &str, name: &str, value: &Value) -> Result<()> {
     let entry = o.entry.clone();
     edit::store(cfg, &entry, &record).map_err(format_error)?;
     Ok(())
-}
-pub fn node(item: &Item, parent: Option<&str>) -> Value {
-    let mut n = json!({"id":item.header.id,"label":item.header.name,"kind":item.kind,"hasChildren":!item.children.is_empty()});
-    if let Some(p) = parent {
-        n["parentId"] = json!(p);
-    }
-    n
 }
 fn walk<'a>(i: &'a Item, parent: Option<String>, nodes: &mut Vec<(&'a Item, Option<String>)>) {
     nodes.push((i, parent));

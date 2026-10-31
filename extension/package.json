@@ -2,7 +2,7 @@
   "name": "cf-extension",
   "displayName": "Конструктор 1С",
   "description": "Навигатор метаданных 1С через самостоятельный model-server",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "publisher": "RunetX",
   "license": "MIT",
   "repository": {
@@ -67,6 +67,13 @@
           "type": "string",
           "default": "",
           "description": "Явный путь к model-server для разработки"
+        },
+        "cfExtension.platformPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "restricted": true,
+          "description": "Каталог bin установленной 1С (или каталог её версии) для оригинальных значков. Пустое значение — автоматический поиск. Без платформы используются SVG."
         }
       }
     },

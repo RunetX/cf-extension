@@ -6,7 +6,8 @@ with stderr; stdout contains framed protocol only. Notifications receive no resp
 
 - `initialize {}` → `{protocolVersion:1,capabilities:{open,tree,properties,edit,save,search,references,composition}}` (boolean values).
 - `model.open {path:string,discardChanges?:boolean}` → State; binary or root XML/directory.
-- `model.tree {parentId?:string}` → Node[]; lazy direct children.
+- `model.tree {parentId?:string}` → Node[]; lazy presentation children. One configuration root, Common and class groups, typed child collections (including empty collections).
+- `model.node {id:string}` → Node; direct parent lookup for reveal/search without recursively enumerating the whole tree.
 - `model.properties {id:string}` → `{id:string,properties:Property[]}`.
 - `model.setProperty {id:string,name:string,value:JSON,revision:number}` → State.
 - `model.search {query:string}` → Node[]; case-insensitive names/synonyms, blank yields [].
@@ -18,10 +19,10 @@ with stderr; stdout contains framed protocol only. Notifications receive no resp
 - `model.changed` notification params = State after successful open/setProperty/save/close.
 
 State = `{loaded:boolean,sourcePath:string|null,dirty:boolean,revision:number}`.
-Node = `{id:string,label:string,kind:string,hasChildren:boolean,parentId?:string}`.
+Node = `{id:string,label:string,kind:string,hasChildren:boolean,parentId?:string,metadataKind?:string,typeLabel?:string}`.
 Property = `{name:string,label:string,kind:'string'|'boolean'|'number'|'enum'|'readonly',value:JSON,editable:boolean,options?:string[]}`.
 
-Object ids use stable library UUIDs; groups use `group:<class>`. Unmapped reference
+Object ids use stable library UUIDs; class groups use `group:<class>`, Common uses `common`, and owned collections use `children:<owner UUID>:<kind>`. Each parentId names the actual presentation parent; search/references/composition use these same ids. Virtual groups have no editable properties. Unmapped reference
 records use `record:<entry>` ids and are displayed without an editable palette.
 Name/Synonym/Comment on Configuration/Catalog/Attribute and Catalog.Hierarchical
 are supported. Synonym edits Russian while retaining other languages. Complex or

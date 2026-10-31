@@ -19,9 +19,20 @@ export async function run(): Promise<void> {
         assert.equal(api.state().loaded, true);
         const roots = await api.tree();
         assert.ok(roots.some(n => n.label === 'NavigatorSynthetic'));
+        assert.equal(roots.length, 1, 'configuration is the sole root');
+        const rootChildren = await api.tree(roots[0].id);
+        assert.equal(rootChildren[0].label, 'Общие');
+        assert.equal(rootChildren[0].parentId, roots[0].id);
+        assert.ok((await api.tree('common')).some(n => n.label === 'Общие модули'));
+        assert.equal((await api.node('group:Catalog')).parentId, roots[0].id);
         const objects = await api.tree('group:Catalog');
         const catalog = objects.find(n => n.label === 'Products')!;
         assert.ok(catalog);
+        const collections = await api.tree(catalog.id);
+        assert.deepEqual(collections.map(n => n.label), ['Реквизиты', 'Табличные части', 'Формы', 'Команды', 'Макеты']);
+        const attributes = await api.tree(collections[0].id);
+        assert.equal(attributes[0].parentId, collections[0].id);
+        await vscode.commands.executeCommand('cfExtension.select', attributes[0]);
         await vscode.commands.executeCommand('cfExtension.select', catalog);
         const runtime = api as unknown as {
             properties(id: string): Promise<{

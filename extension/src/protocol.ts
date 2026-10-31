@@ -10,6 +10,8 @@ export interface ModelNode {
     kind: string;
     hasChildren: boolean;
     parentId?: string;
+    metadataKind?: string;
+    typeLabel?: string;
 }
 export interface ModelProperty {
     name: string;
