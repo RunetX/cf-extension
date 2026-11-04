@@ -68,6 +68,17 @@ export async function run(): Promise<void> {
         assert.equal(doc.isDirty,false);
         assert.equal(api.state().dirty,true);
         assert.deepEqual(await fs.readFile(fixture),originalFile,'Ctrl+S changes only the model');
+        const waitFor = async (what: () => boolean, label: string): Promise<void> => {
+            const deadline = Date.now() + 15000;
+            while (!what()) { if (Date.now() > deadline) throw new Error(`timeout waiting for ${label}`); await new Promise(r => setTimeout(r, 100)); }
+        };
+        // Broken text is already in the buffer: diagnostics appear live, without Ctrl+S.
+        await waitFor(() => vscode.languages.getDiagnostics(doc.uri).length > 0, 'BSL diagnostics');
+        assert.ok(vscode.languages.getDiagnostics(doc.uri).some(d => d.source === 'Конструктор BSL'), 'BSL diagnostic source');
+        const fix = new vscode.WorkspaceEdit();
+        fix.replace(doc.uri, new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length)), '// Host module edit 😀\nПроцедура Несохраненный()\nКонецПроцедуры\n');
+        assert.ok(await vscode.workspace.applyEdit(fix));
+        await waitFor(() => vscode.languages.getDiagnostics(doc.uri).length === 0, 'diagnostics cleared');
         const append = new vscode.WorkspaceEdit(); append.insert(doc.uri,doc.positionAt(doc.getText().length),'// flush');
         assert.ok(await vscode.workspace.applyEdit(append));
         const props = await runtime.properties(catalog.id);
@@ -94,7 +105,7 @@ export async function run(): Promise<void> {
         assert.ok((await fs.stat(path.join(xml, 'Configuration.xml'))).isFile());
         await assert.rejects(runtime.save(xml, 'xml'), /новый|пустой/i);
         await runtime.close();
-        console.log('Real Extension Host: activation/open/tree/select/properties/edit/dirty/revision/search/references/composition/save/reopen/XML passed');
+        console.log('Real Extension Host: activation/open/tree/select/properties/edit/dirty/revision/search/references/composition/save/reopen/XML/diagnostics passed');
     }
     finally {
         api.dispose();

@@ -21,6 +21,8 @@ pub struct Model {
     module_versions: std::collections::HashMap<String, u64>,
     dirty: bool,
     xml_source: bool,
+    analysis: crate::bsl::analysis::Session,
+    notes: Vec<Value>,
 }
 fn bad(message: impl Into<String>) -> Error {
     (-32602, message.into())
@@ -42,6 +44,24 @@ impl Model {
         self.config
             .as_ref()
             .ok_or((-32000, "Откройте конфигурацию".into()))
+    }
+    /// Исходящие уведомления (textDocument/publishDiagnostics): забирает цикл serve после ответа.
+    pub fn take_notes(&mut self) -> Vec<Value> {
+        std::mem::take(&mut self.notes)
+    }
+    fn clear_analysis(&mut self) {
+        for params in self.analysis.clear() {
+            self.notes.push(params);
+        }
+    }
+    /// Роль модуля по точному ключу записи (для выбора места компиляции в анализе).
+    fn module_role(&self, id: &str) -> Result<String> {
+        let cfg = self.cfg()?;
+        modules(cfg)
+            .into_iter()
+            .find(|m| m["id"] == id)
+            .map(|m| m["role"].as_str().unwrap_or_default().to_string())
+            .ok_or_else(|| bad("Неизвестный или недоступный модуль"))
     }
     fn guard(&self, p: &Value) -> Result<()> {
         if p.get("discardChanges").is_some_and(|v| !v.is_boolean()) {
@@ -95,9 +115,76 @@ impl Model {
         }
         match method {
             "initialize" => Ok(
-                json!({"protocolVersion":1,"capabilities":{"open":true,"tree":true,"node":true,"properties":true,"edit":true,"save":true,"search":true,"references":true,"composition":true}}),
+                json!({"protocolVersion":1,"capabilities":{"open":true,"tree":true,"node":true,"properties":true,"edit":true,"save":true,"search":true,"references":true,"composition":true,"modules":true},"positionEncoding":"utf-16","textDocumentSync":1}),
             ),
             "shutdown" => Ok(Value::Null),
+            "textDocument/didOpen" => {
+                if self.config.is_none() {
+                    return Err((-32000, "Откройте конфигурацию".into()));
+                }
+                let session = p
+                    .get("sessionId")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| bad("sessionId: требуется целое число"))?;
+                if session != self.session_id {
+                    return Err((
+                        -32002,
+                        "Конфигурация сменилась; документ старой сессии".into(),
+                    ));
+                }
+                let id = text(p, "moduleId")?;
+                let role = self.module_role(id)?;
+                let uri = text(p, "uri")?;
+                let version = p
+                    .get("version")
+                    .and_then(Value::as_i64)
+                    .ok_or_else(|| bad("version: требуется целое число"))?;
+                let value = text(p, "text")?;
+                if self.analysis.module_of(uri).is_some() {
+                    return Err(bad("Документ анализа уже открыт"));
+                }
+                let params = self.analysis.open(
+                    uri,
+                    id,
+                    version,
+                    value,
+                    self.config.as_ref().unwrap(),
+                    &role,
+                );
+                self.notes.push(params);
+                Ok(Value::Null)
+            }
+            "textDocument/didChange" => {
+                if self.config.is_none() {
+                    return Err((-32000, "Откройте конфигурацию".into()));
+                }
+                let uri = text(p, "uri")?;
+                let version = p
+                    .get("version")
+                    .and_then(Value::as_i64)
+                    .ok_or_else(|| bad("version: требуется целое число"))?;
+                let value = text(p, "text")?;
+                let role = match self.analysis.module_of(uri) {
+                    Some(id) => self.module_role(id)?,
+                    None => return Err(bad("Неизвестный документ анализа")),
+                };
+                let params = self.analysis.change(
+                    uri,
+                    version,
+                    value,
+                    self.config.as_ref().unwrap(),
+                    &role,
+                )?;
+                self.notes.push(params);
+                Ok(Value::Null)
+            }
+            "textDocument/didClose" => {
+                let uri = text(p, "uri")?;
+                if let Some(params) = self.analysis.close(uri) {
+                    self.notes.push(params);
+                }
+                Ok(Value::Null)
+            }
             "model.open" => {
                 self.guard(p)?;
                 let path = text(p, "path")?;
@@ -109,6 +196,7 @@ impl Model {
                 self.source = Some(path.into());
                 self.dirty = false;
                 self.revision += 1;
+                self.clear_analysis();
                 Ok(self.state())
             }
             "model.close" => {
@@ -117,6 +205,7 @@ impl Model {
                 self.source = None;
                 self.dirty = false;
                 self.revision += 1;
+                self.clear_analysis();
                 Ok(self.state())
             }
             "model.modules" => {

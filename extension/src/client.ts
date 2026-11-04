@@ -40,6 +40,18 @@ export class RpcClient {
             this.child.stdin.write(Buffer.concat([Buffer.from(`Content-Length: ${body.length}\r\n\r\n`), body]));
         });
     }
+    /** Исходящее уведомление без id (LSP lifecycle): ответа не бывает. */
+    notify(method: string, params: unknown = {}): void {
+        if (this.stopped) {
+            return;
+        }
+        const body = Buffer.from(JSON.stringify({ jsonrpc: '2.0', method, params }), 'utf8');
+        if (body.length > FRAME_LIMIT) {
+            this.fail(new Error('Frame exceeds 16 MiB'));
+            return;
+        }
+        this.child.stdin.write(Buffer.concat([Buffer.from(`Content-Length: ${body.length}\r\n\r\n`), body]));
+    }
     private receive(chunk: Buffer): void {
         if (this.stopped) {
             return;

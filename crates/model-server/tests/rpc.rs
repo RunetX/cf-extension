@@ -212,6 +212,21 @@ impl Session {
             id: 0,
         }
     }
+    fn read_message(&mut self) -> Value {
+        let mut line = String::new();
+        assert!(self.output.read_line(&mut line).unwrap() > 0);
+        let n: usize = line
+            .trim()
+            .strip_prefix("Content-Length: ")
+            .unwrap()
+            .parse()
+            .unwrap();
+        line.clear();
+        self.output.read_line(&mut line).unwrap();
+        let mut body = vec![0; n];
+        self.output.read_exact(&mut body).unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
     fn call(&mut self, method: &str, params: Value) -> Value {
         self.id += 1;
         let body =
@@ -219,23 +234,18 @@ impl Session {
         write!(self.input, "Content-Length: {}\r\n\r\n{}", body.len(), body).unwrap();
         self.input.flush().unwrap();
         loop {
-            let mut line = String::new();
-            assert!(self.output.read_line(&mut line).unwrap() > 0);
-            let n: usize = line
-                .trim()
-                .strip_prefix("Content-Length: ")
-                .unwrap()
-                .parse()
-                .unwrap();
-            line.clear();
-            self.output.read_line(&mut line).unwrap();
-            let mut body = vec![0; n];
-            self.output.read_exact(&mut body).unwrap();
-            let response: Value = serde_json::from_slice(&body).unwrap();
+            let response = self.read_message();
             if response.get("id").is_some() {
                 return response;
             }
         }
+    }
+    /// Успешный вызов, после ответа которого сервер обязан прислать publishDiagnostics; возвращает params уведомления.
+    fn ok_publish(&mut self, method: &str, params: Value) -> Value {
+        self.ok(method, params);
+        let note = self.read_message();
+        assert_eq!(note["method"], "textDocument/publishDiagnostics", "{note}");
+        note["params"].clone()
     }
     fn ok(&mut self, method: &str, params: Value) -> Value {
         let r = self.call(method, params);
@@ -919,6 +929,136 @@ fn modules_are_owned_versioned_and_transactional() {
         .unwrap()
         .iter()
         .any(|n| n["kind"] == "module" && n["role"] == "ObjectModule"));
+    drop(rpc);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bsl_diagnostics_follow_documents_and_never_touch_config() {
+    let dir = std::env::temp_dir().join(format!("cf-extension-bsl-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("diag.cf");
+    assert!(server_command()
+        .args(["--generate-fixture", path.to_str().unwrap()])
+        .status()
+        .unwrap()
+        .success());
+    let mut rpc = Session::new();
+    rpc.ok("model.open", json!({"path":path}));
+    let cfg = cf_unwrapper::meta::Config::open(&std::fs::read(&path).unwrap()).unwrap();
+    let owner = cfg
+        .groups
+        .iter()
+        .flat_map(|g| &g.items)
+        .find(|i| i.kind == "Catalog")
+        .unwrap()
+        .header
+        .id
+        .clone();
+    let module = rpc.ok("model.modules", json!({"ownerId":owner}))[0]["id"].clone();
+    let uri = "cf-module://analysis-test/1/4f626a4d6f64756c65/Products.bsl";
+
+    // Живая синтаксическая ошибка: без сохранения, сразу после didOpen.
+    let broken = "Процедура А() Экспорт\n\tБ = 1 +;\nКонецПроцедуры\n";
+    let published = rpc.ok_publish(
+        "textDocument/didOpen",
+        json!({"uri":uri,"languageId":"bsl","version":1,"text":broken,"moduleId":module,"sessionId":1}),
+    );
+    assert_eq!(published["uri"], uri);
+    assert_eq!(published["version"], 1);
+    let diags = published["diagnostics"].as_array().unwrap();
+    assert!(diags.iter().any(|d| d["message"]
+        .as_str()
+        .unwrap()
+        .contains("Ошибка в выражении")));
+    assert_eq!(diags[0]["range"]["start"]["line"], 1);
+    assert_eq!(
+        diags[0]["range"]["start"]["character"], 8,
+        "позиция 0-based UTF-16"
+    );
+    assert_eq!(diags[0]["source"], "Конструктор BSL");
+
+    // Повтор объявления и несуществующий объект известной коллекции — диагностируются.
+    let dup = "Процедура А() Экспорт\nКонецПроцедуры\nПроцедура А()\nКонецПроцедуры\nСправочники.НетТакого.ПустаяСсылка();\n";
+    let published = rpc.ok_publish(
+        "textDocument/didChange",
+        json!({"uri":uri,"version":2,"text":dup}),
+    );
+    let messages: Vec<_> = published["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["message"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        messages.iter().any(|m| m.contains("уже определена (А)")),
+        "{messages:?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("Объект метаданных не найден (Справочники.НетТакого)")),
+        "{messages:?}"
+    );
+    // Валидные обращения не получают ложных ошибок.
+    assert!(
+        !messages
+            .iter()
+            .any(|m| m.contains("Объект метаданных не найден (Справочники.Products)")),
+        "{messages:?}"
+    );
+
+    // Исправление очищает диагностику без Ctrl+S; модель и Config не менялись.
+    let fixed = "Процедура А() Экспорт\n\tСправочники.Products.ПустаяСсылка();\nКонецПроцедуры\n";
+    let published = rpc.ok_publish(
+        "textDocument/didChange",
+        json!({"uri":uri,"version":3,"text":fixed}),
+    );
+    assert_eq!(published["diagnostics"].as_array().unwrap().len(), 0);
+    let state = rpc.ok("model.module", json!({"id":module,"sessionId":1}));
+    assert!(
+        state["text"].as_str().unwrap().contains("Synthetic module"),
+        "didChange не пишет в Config"
+    );
+
+    // Порядок версий строго вперёд; чужие сессии и неизвестные документы отклоняются.
+    assert_eq!(
+        rpc.call(
+            "textDocument/didChange",
+            json!({"uri":uri,"version":3,"text":fixed})
+        )["error"]["code"],
+        -32602
+    );
+    assert_eq!(
+        rpc.call("textDocument/didOpen", json!({"uri":"cf-module://other","languageId":"bsl","version":1,"text":"","moduleId":module,"sessionId":0}))["error"]["code"],
+        -32002
+    );
+    assert_eq!(
+        rpc.call(
+            "textDocument/didChange",
+            json!({"uri":"cf-module://unknown","version":2,"text":""})
+        )["error"]["code"],
+        -32602
+    );
+
+    // Закрытие вкладки очищает её диагностику; смена модели — всю сессию анализа.
+    let published = rpc.ok_publish("textDocument/didClose", json!({"uri":uri}));
+    assert_eq!(published["diagnostics"].as_array().unwrap().len(), 0);
+    rpc.ok(
+        "textDocument/didOpen",
+        json!({"uri":uri,"languageId":"bsl","version":1,"text":broken,"moduleId":module,"sessionId":1}),
+    );
+    let _ = rpc.read_message();
+    rpc.ok("model.open", json!({"path":path}));
+    let changed = rpc.read_message();
+    assert_eq!(changed["method"], "model.changed");
+    let cleared = rpc.read_message();
+    assert_eq!(cleared["method"], "textDocument/publishDiagnostics");
+    assert_eq!(cleared["params"]["uri"], uri);
+    assert_eq!(
+        cleared["params"]["diagnostics"].as_array().unwrap().len(),
+        0
+    );
     drop(rpc);
     std::fs::remove_dir_all(dir).unwrap();
 }

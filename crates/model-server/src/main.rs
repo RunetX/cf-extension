@@ -1,3 +1,4 @@
+mod bsl;
 mod fixture;
 mod model;
 mod tree;
@@ -117,6 +118,12 @@ fn serve() -> Result<(), String> {
             send(
                 &mut output,
                 json!({"jsonrpc":"2.0","method":"model.changed","params":model.state()}),
+            )?;
+        }
+        for params in model.take_notes() {
+            send(
+                &mut output,
+                json!({"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":params}),
             )?;
         }
         if success && method == "shutdown" {

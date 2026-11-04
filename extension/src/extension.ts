@@ -4,10 +4,12 @@ import { RpcClient } from './client';
 import { InitializeResult, ModelNode, ModelState, PropertyResult } from './protocol';
 import { MetadataTree, PropertyPalette } from './navigator';
 import { ModuleDocuments } from './moduleDocuments';
+import { BslDiagnostics } from './bsl';
 import { ModuleInfo, ModuleDocument } from './protocol';
 import { TreeIcons } from './treeIcons';
 export interface ExtensionApi {
     request<T>(method: string, params?: unknown): Promise<T>;
+    notify(method: string, params?: unknown): void;
     onNotification(listener: (method: string, params: unknown) => void): vscode.Disposable;
     onState(listener: (state: ModelState) => void): vscode.Disposable;
     readonly documents: ModuleDocuments;
@@ -94,6 +96,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Extens
     async function request<T>(method: string, params: unknown = {}): Promise<T> { return (await connect()).request<T>(method, params); }
     const api: ExtensionApi = {
         request,
+        notify(method, params) { const active = client; if (active) { active.notify(method, params); } else { void connect().then(c => c.notify(method, params)).catch(() => {}); } },
         onNotification(listener) { notifications.add(listener); return new vscode.Disposable(() => { notifications.delete(listener); }); },
         onState(listener) { return states.event(listener); },
         get documents() { return documents; },
@@ -108,7 +111,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<Extens
         async close(discardChanges) { if (documents.dirtyDocuments().length && !discardChanges) throw new Error('Есть несохранённые изменения модулей'); const state=update(await request<ModelState>('model.close', { discardChanges })); await documents.retire(); return state; }, state() { return { ...current }; }, dispose() { const old = client; client = undefined; old?.dispose(); }
     };
     const documents = new ModuleDocuments(api);
-    context.subscriptions.push(documents,states);
+    const bsl = new BslDiagnostics(api, documents);
+    context.subscriptions.push(documents, bsl, states);
     const tree = new MetadataTree(api, icons);
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => { if (event.affectsConfiguration('cfExtension.platformPath')) { void icons.reload().then(() => tree.refresh()); } }));
     const treeView = vscode.window.createTreeView('cfExtension.metadata', { treeDataProvider: tree, showCollapseAll: true });
