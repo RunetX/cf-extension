@@ -101,6 +101,12 @@ export async function run(): Promise<void> {
         assert.ok(managerDefs?.length === 1 && managerDefs[0].uri.scheme === 'cf-module' && managerDefs[0].uri.toString() !== doc.uri.toString(), 'F12 к методу менеджера открывает его cf-module документ');
         const commonDefs = await vscode.commands.executeCommand<vscode.Location[]>('vscode.executeDefinitionProvider', doc.uri, new vscode.Position(5, cmName.length + 4));
         assert.ok(commonDefs?.length === 1 && commonDefs[0].uri.scheme === 'cf-module', 'F12 к методу общего модуля');
+        const targetDoc = await vscode.workspace.openTextDocument(commonDefs![0].uri);
+        const targetEdit = new vscode.WorkspaceEdit();
+        targetEdit.insert(commonDefs![0].uri, targetDoc.positionAt(targetDoc.getText().length), '// after jump');
+        assert.ok(await vscode.workspace.applyEdit(targetEdit));
+        assert.ok(await targetDoc.save());
+        assert.equal(api.state().dirty, true, 'модуль, открытый через F12, редактируется и сохраняется в модель');
         const append = new vscode.WorkspaceEdit(); append.insert(doc.uri,doc.positionAt(doc.getText().length),'// flush');
         assert.ok(await vscode.workspace.applyEdit(append));
         const props = await runtime.properties(catalog.id);
