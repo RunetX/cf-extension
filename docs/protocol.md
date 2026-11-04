@@ -4,10 +4,12 @@ JSON-RPC 2.0 stdio: `Content-Length` in UTF-8 bytes, CRLF CRLF, JSON body.
 Maximum frame 16 MiB, headers 8192 bytes. EOF exits normally. Invalid framing exits
 with stderr; stdout contains framed protocol only. Notifications receive no response.
 
-- `initialize {}` → `{protocolVersion:1,capabilities:{open,tree,properties,edit,save,search,references,composition,modules},positionEncoding:'utf-16',textDocumentSync:1}` (capabilities boolean, LSP subset values).
+- `initialize {}` → `{protocolVersion:1,capabilities:{open,tree,properties,edit,save,search,references,composition,modules},positionEncoding:'utf-16',textDocumentSync:1,completionProvider:{triggerCharacters:['.']},definitionProvider:true}` (capabilities boolean, LSP subset values).
 - `textDocument/didOpen {uri:string,languageId:string,version:number,text:string,moduleId:string,sessionId:number}` (notification) → `textDocument/publishDiagnostics` notification; live BSL diagnostics of the open buffer.
 - `textDocument/didChange {uri:string,version:number,text:string}` (notification) → `textDocument/publishDiagnostics`; full sync, version strictly forward.
 - `textDocument/didClose {uri:string}` (notification) → `textDocument/publishDiagnostics` with an empty list.
+- `textDocument/completion {textDocument:{uri:string},position:{line:number,character:number}}` → CompletionItem[] `{label:string,kind:number,detail:string,insertText:string}`; positions 0-based UTF-16. Metadata-driven variants only: manager collections RU/EN → object names, known-object fields/tabular sections, common-module and manager-module exports, keywords and module-local names.
+- `textDocument/definition {textDocument:{uri:string},position:{line:number,character:number}}` → `null` or a navigation target: `{kind:'line',uri,line,character}` (same document), `{kind:'module',module:string,line:number|null}` (exact module entry; the client opens it through its own ModuleDocuments binding), `{kind:'metadata',class,name,id}` (tree object; the client reveals/selects it, no file is opened). Unknown or unreliable targets are `null`.
 - `model.open {path:string,discardChanges?:boolean}` → State; binary or root XML/directory.
 - `model.tree {parentId?:string}` → Node[]; lazy presentation children. One configuration root, Common and class groups, typed child collections (including empty collections), module nodes of existing modules.
 - `model.node {id:string}` → Node; direct parent lookup for reveal/search without recursively enumerating the whole tree. Module ids are `module:<entry>`.

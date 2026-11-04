@@ -5,6 +5,7 @@ import { InitializeResult, ModelNode, ModelState, PropertyResult } from './proto
 import { MetadataTree, PropertyPalette } from './navigator';
 import { ModuleDocuments } from './moduleDocuments';
 import { BslDiagnostics } from './bsl';
+import { BslNavigation } from './nav';
 import { ModuleInfo, ModuleDocument } from './protocol';
 import { TreeIcons } from './treeIcons';
 export interface ExtensionApi {
@@ -112,7 +113,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<Extens
     };
     const documents = new ModuleDocuments(api);
     const bsl = new BslDiagnostics(api, documents);
-    context.subscriptions.push(documents, bsl, states);
+    const navigation = new BslNavigation(api, documents);
+    context.subscriptions.push(documents, bsl, navigation, states);
     const tree = new MetadataTree(api, icons);
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => { if (event.affectsConfiguration('cfExtension.platformPath')) { void icons.reload().then(() => tree.refresh()); } }));
     const treeView = vscode.window.createTreeView('cfExtension.metadata', { treeDataProvider: tree, showCollapseAll: true });
@@ -167,6 +169,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Extens
         return;
     } const state = update(await request<ModelState>('model.open', { path: filePath, discardChanges: current.dirty })); await documents.retire(); selectionToken++; selected = undefined; palette.clear(); return state; });
     register('openModule', async (value: ModelNode | string) => { const id=typeof value === 'string' ? value : value.id; const doc=await api.openModule(id.startsWith('module:') ? id.slice(7) : id); await vscode.window.showTextDocument(doc,{preview:false}); return doc; });
+    register('reveal', async (id: string) => { await reveal(await api.node(id)); });
     register('select', select);
     treeView.onDidChangeSelection(event => { if (event.selection[0]) {
         void select(event.selection[0]).catch(e => vscode.window.showErrorMessage(String(e)));

@@ -934,6 +934,154 @@ fn modules_are_owned_versioned_and_transactional() {
 }
 
 #[test]
+fn bsl_completion_and_definition_follow_metadata() {
+    let dir = std::env::temp_dir().join(format!("cf-extension-bslnav-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("nav.cf");
+    assert!(server_command()
+        .args(["--generate-fixture", path.to_str().unwrap()])
+        .status()
+        .unwrap()
+        .success());
+    let mut rpc = Session::new();
+    rpc.ok("model.open", json!({"path":path}));
+    let cfg = cf_unwrapper::meta::Config::open(&std::fs::read(&path).unwrap()).unwrap();
+    let catalog = cfg
+        .groups
+        .iter()
+        .flat_map(|g| &g.items)
+        .find(|i| i.kind == "Catalog")
+        .unwrap();
+    let owner = catalog.header.id.clone();
+    let common = cfg
+        .groups
+        .iter()
+        .flat_map(|g| &g.items)
+        .find(|i| i.kind == "CommonModule")
+        .unwrap();
+    let cm_name = common.header.name.clone();
+    let all = rpc.ok("model.modules", json!({}));
+    let entry = |role: &str, owner_id: &str| {
+        all.as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == role && m["ownerId"] == owner_id)
+            .unwrap()["id"]
+            .clone()
+    };
+    let object_module = entry("ObjectModule", &owner);
+    let manager_module = entry("ManagerModule", &owner);
+    let common_module = entry("Module", &common.header.id);
+    let uri = "cf-module://nav-test/1/4e6176/Products.bsl";
+
+    // Один документ: подсказки и переходы по строкам (0-based).
+    let lines = [
+        "Процедура П()",
+        "\tСправочники.",
+        "\tCatalogs.",
+        "\tСправочники.Pr",
+        "\tСправочники.Products.",
+        &format!("\t{cm_name}."),
+        "\tСправочники.Products.Example()",
+        &format!("\t{cm_name}.Example()"),
+        "\tСправочники.Products.ПустаяСсылка()",
+        "\tП()",
+        "\tНетТакого.",
+        "КонецПроцедуры",
+    ];
+    let text = lines.join("\n");
+    rpc.ok_publish(
+        "textDocument/didOpen",
+        json!({"uri":uri,"languageId":"bsl","version":1,"text":text,"moduleId":object_module,"sessionId":1}),
+    );
+
+    let mut completion = |line: usize, character: usize| {
+        rpc.ok(
+            "textDocument/completion",
+            json!({"textDocument":{"uri":uri},"position":{"line":line,"character":character}}),
+        )
+    };
+    let labels = |v: &Value| -> Vec<String> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["label"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    // Коллекции менеджеров RU/EN → реальные имена объектов конфигурации.
+    let items = completion(1, 13);
+    assert!(
+        items
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["label"] == "Products" && i["insertText"] == "Products"),
+        "{items}"
+    );
+    assert!(labels(&completion(2, 10)).contains(&"Products".to_string()));
+    // Незавершённый ввод отбирает по префиксу.
+    assert_eq!(labels(&completion(3, 15)), ["Products"]);
+    // Менеджер объекта: экспортные методы модуля менеджера + известные методы менеджера.
+    let items = labels(&completion(4, 22));
+    assert!(items.contains(&"Example".to_string()), "{items:?}");
+    assert!(items.contains(&"СоздатьЭлемент".to_string()), "{items:?}");
+    // Общий модуль: только его экспортные методы.
+    assert_eq!(
+        labels(&completion(5, cm_name.chars().count() + 2)),
+        ["Example"]
+    );
+
+    let mut definition = |line: usize, character: usize| {
+        rpc.ok(
+            "textDocument/definition",
+            json!({"textDocument":{"uri":uri},"position":{"line":line,"character":character}}),
+        )
+    };
+    // Вызов метода менеджера → его модуль и строка.
+    let target = definition(6, 24);
+    assert_eq!(target["kind"], "module");
+    assert_eq!(target["module"], manager_module);
+    assert_eq!(target["line"], 1, "Procedure Example() — строка 1 от 0");
+    // Вызов экспортного метода общего модуля → его модуль и строка.
+    let target = definition(7, cm_name.chars().count() + 4);
+    assert_eq!(target["kind"], "module");
+    assert_eq!(target["module"], common_module);
+    assert_eq!(target["line"], 1);
+    // Имя объекта метаданных → настоящий объект дерева.
+    let target = definition(8, 15);
+    assert_eq!(target["kind"], "metadata");
+    assert_eq!(target["class"], "Catalog");
+    assert_eq!(target["name"], "Products");
+    assert_eq!(target["id"], owner);
+    // Локальный метод — строка этого документа.
+    let target = definition(9, 2);
+    assert_eq!(target["kind"], "line");
+    assert_eq!(target["uri"], uri);
+    assert_eq!(target["line"], 0);
+    // Непонятная цель — пусто, без выдуманной ссылки.
+    assert_eq!(definition(10, 5), Value::Null);
+
+    // Неизвестный документ анализа отклоняется.
+    assert_eq!(
+        rpc.call(
+            "textDocument/completion",
+            json!({"textDocument":{"uri":"cf-module://unknown"},"position":{"line":0,"character":0}})
+        )["error"]["code"],
+        -32602
+    );
+    assert_eq!(
+        rpc.call(
+            "textDocument/definition",
+            json!({"textDocument":{"uri":"cf-module://unknown"},"position":{"line":0,"character":0}})
+        )["error"]["code"],
+        -32602
+    );
+    drop(rpc);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bsl_diagnostics_follow_documents_and_never_touch_config() {
     let dir = std::env::temp_dir().join(format!("cf-extension-bsl-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

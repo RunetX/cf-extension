@@ -49,6 +49,17 @@ pub fn generate(path: &Path) -> Result<(), String> {
         names = xml::edit::Names::new(&cfg);
         let (_, changes) = xml::edit::add(&cfg, &mut names, "CommonModule")?;
         xml::edit::apply(&mut cfg, &changes, false)?;
+        let common = cfg
+            .groups
+            .iter()
+            .flat_map(|g| &g.items)
+            .find(|i| i.kind == "CommonModule")
+            .unwrap()
+            .header
+            .id
+            .clone();
+        let change = xml::edit::new_module(&cfg, &common, "Module")?;
+        xml::edit::apply(&mut cfg, &[change], false)?;
         names = xml::edit::Names::new(&cfg);
         let (_, changes) = xml::edit::add_form(&cfg, &mut names, &id, "", false, None, None)?;
         xml::edit::apply(&mut cfg, &changes, false)?;

@@ -11,6 +11,7 @@
 
 pub mod analysis;
 pub mod lex;
+pub mod nav;
 
 use lex::{Kw, Token, T};
 

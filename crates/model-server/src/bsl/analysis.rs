@@ -60,6 +60,23 @@ fn position(text: &str, line1: u32, col1: u32) -> (u32, u32) {
     (line1.max(1) - 1, character)
 }
 
+/// Колонка UTF-16 (0-based) в строке → колонка в знаках (0-based) для внутреннего анализа.
+pub fn utf16_to_char_col(line: &str, utf16_col: u32) -> usize {
+    let mut units = 0u32;
+    for (i, c) in line.chars().enumerate() {
+        if units >= utf16_col {
+            return i;
+        }
+        units += c.len_utf16() as u32;
+    }
+    line.chars().count()
+}
+
+/// (строка от 0, символ UTF-16) позиции в тексте модуля: `line1`/`col1` от 1.
+pub fn char_position(text: &str, line1: u32, col1: u32) -> (u32, u32) {
+    position(text, line1, col1)
+}
+
 /// Диапазон ошибки: от позиции до конца слова в этой позиции (если оно там есть), иначе нулевой.
 fn range(text: &str, e: &Error) -> Value {
     let (line, character) = position(text, e.line, e.col);
@@ -149,6 +166,13 @@ impl Session {
         self.docs.get(uri).map(|d| d.module.as_str())
     }
 
+    /// Открытый документ: (модуль, текст) для completion/definition.
+    pub fn doc(&self, uri: &str) -> Option<(&str, &str)> {
+        self.docs
+            .get(uri)
+            .map(|d| (d.module.as_str(), d.text.as_str()))
+    }
+
     fn publish(&self, uri: &str, version: i64, text: &str, cfg: &Config, role: &str) -> Value {
         let errors = diagnostics(text, role, cfg);
         let list: Vec<Value> = errors
@@ -236,6 +260,15 @@ mod tests {
         );
         assert_eq!(r["start"]["character"], 5);
         assert_eq!(r["end"]["character"], 6, "имя из одной буквы");
+    }
+
+    #[test]
+    fn utf16_col_to_chars() {
+        // astral-символ занимает 2 UTF-16 единицы: перевод колонки обратно в знаки.
+        assert_eq!(utf16_to_char_col("😀Справочники.", 2), 1, "после emoji");
+        assert_eq!(utf16_to_char_col("😀Справочники.", 13), 12, "конец строки");
+        assert_eq!(utf16_to_char_col("Справочники.", 12), 12);
+        assert_eq!(utf16_to_char_col("", 3), 0);
     }
 
     #[test]

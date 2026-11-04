@@ -36,6 +36,18 @@ fn text<'a>(params: &'a Value, name: &str) -> Result<&'a str> {
         .and_then(Value::as_str)
         .ok_or_else(|| bad(format!("{name}: требуется строка")))
 }
+/// Позиция LSP (0-based, UTF-16) из params.position.
+fn position(p: &Value) -> Result<(usize, u32)> {
+    let line = p
+        .pointer("/position/line")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| bad("position.line: требуется целое число"))? as usize;
+    let character =
+        p.pointer("/position/character")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| bad("position.character: требуется целое число"))? as u32;
+    Ok((line, character))
+}
 impl Model {
     pub fn state(&self) -> Value {
         json!({"loaded":self.config.is_some(),"sourcePath":self.source,"dirty":self.dirty,"revision":self.revision,"sessionId":self.session_id})
@@ -62,6 +74,23 @@ impl Model {
             .find(|m| m["id"] == id)
             .map(|m| m["role"].as_str().unwrap_or_default().to_string())
             .ok_or_else(|| bad("Неизвестный или недоступный модуль"))
+    }
+    /// Актуальный документ анализа: идентичность по uri, модуль и текст — из сессии анализа.
+    fn analysis_doc(&self, p: &Value) -> Result<(String, String, String)> {
+        if self.config.is_none() {
+            return Err((-32000, "Откройте конфигурацию".into()));
+        }
+        let uri = p
+            .pointer("/textDocument/uri")
+            .and_then(Value::as_str)
+            .ok_or_else(|| bad("textDocument.uri: требуется строка"))?;
+        let (module, text) = self
+            .analysis
+            .doc(uri)
+            .map(|(m, t)| (m.to_string(), t.to_string()))
+            .ok_or_else(|| bad("Неизвестный документ анализа"))?;
+        let role = self.module_role(&module)?;
+        Ok((uri.to_string(), text, role))
     }
     fn guard(&self, p: &Value) -> Result<()> {
         if p.get("discardChanges").is_some_and(|v| !v.is_boolean()) {
@@ -115,7 +144,7 @@ impl Model {
         }
         match method {
             "initialize" => Ok(
-                json!({"protocolVersion":1,"capabilities":{"open":true,"tree":true,"node":true,"properties":true,"edit":true,"save":true,"search":true,"references":true,"composition":true,"modules":true},"positionEncoding":"utf-16","textDocumentSync":1}),
+                json!({"protocolVersion":1,"capabilities":{"open":true,"tree":true,"node":true,"properties":true,"edit":true,"save":true,"search":true,"references":true,"composition":true,"modules":true},"positionEncoding":"utf-16","textDocumentSync":1,"completionProvider":{"triggerCharacters":["."]},"definitionProvider":true}),
             ),
             "shutdown" => Ok(Value::Null),
             "textDocument/didOpen" => {
@@ -184,6 +213,79 @@ impl Model {
                     self.notes.push(params);
                 }
                 Ok(Value::Null)
+            }
+            "textDocument/completion" => {
+                use crate::bsl::nav::ItemKind;
+                let (_uri, value, _role) = self.analysis_doc(p)?;
+                let (line, character) = position(p)?;
+                let lines: Vec<String> = value.split('\n').map(String::from).collect();
+                let line_text = lines.get(line).map(String::as_str).unwrap_or_default();
+                let col = crate::bsl::analysis::utf16_to_char_col(line_text, character);
+                let meta = MetaConfig {
+                    cfg: self.config.as_ref().unwrap(),
+                };
+                let items = crate::bsl::nav::complete(&meta, &lines, line, col);
+                let kind = |k: ItemKind| match k {
+                    ItemKind::Keyword => 14,
+                    ItemKind::Method => 2,
+                    ItemKind::Property => 5,
+                    ItemKind::Module => 9,
+                    ItemKind::Object => 7,
+                    ItemKind::Var => 6,
+                };
+                let list: Vec<Value> = items
+                    .into_iter()
+                    .map(|i| {
+                        json!({"label":i.label,"kind":kind(i.kind),"detail":i.detail,"insertText":i.insert})
+                    })
+                    .collect();
+                Ok(json!(list))
+            }
+            "textDocument/definition" => {
+                let (uri, value, _role) = self.analysis_doc(p)?;
+                let (line, character) = position(p)?;
+                let lines: Vec<String> = value.split('\n').map(String::from).collect();
+                let line_text = lines.get(line).map(String::as_str).unwrap_or_default();
+                let col = crate::bsl::analysis::utf16_to_char_col(line_text, character);
+                let meta = MetaConfig {
+                    cfg: self.config.as_ref().unwrap(),
+                };
+                let target = crate::bsl::nav::definition(&meta, &lines, line, col);
+                let result = match target {
+                    None => Value::Null,
+                    Some(crate::bsl::nav::Target::Line(l)) => {
+                        let (l0, ch0) =
+                            crate::bsl::analysis::char_position(&value, l as u32 + 1, 1);
+                        json!({"kind":"line","uri":uri,"line":l0,"character":ch0})
+                    }
+                    Some(crate::bsl::nav::Target::Method {
+                        class,
+                        name,
+                        role,
+                        method,
+                    }) => {
+                        // Запись модуля владельца по классу/имени/роли; строка метода в его тексте.
+                        let entry = meta
+                            .module_entry(&class, &name, &role)
+                            .ok_or_else(|| bad("Модуль объекта не найден"))?;
+                        let text = self
+                            .config
+                            .as_ref()
+                            .unwrap()
+                            .module_text(&entry)
+                            .ok_or_else(|| format_error("Модуль не читается"))?;
+                        let ml = crate::bsl::nav::method_line(
+                            text.split('\n').collect::<Vec<_>>().as_slice(),
+                            &method,
+                        )
+                        .map(|l| l as u32);
+                        json!({"kind":"module","module":entry,"line":ml})
+                    }
+                    Some(crate::bsl::nav::Target::Metadata { class, name, id }) => {
+                        json!({"kind":"metadata","class":class,"name":name,"id":id})
+                    }
+                };
+                Ok(result)
             }
             "model.open" => {
                 self.guard(p)?;
@@ -704,4 +806,92 @@ pub fn modules(cfg: &Config) -> Vec<Value> {
             Some(json!({"id":id,"ownerId":owner,"role":role,"label":label}))
         })
         .collect()
+}
+
+/// Адаптер метаданных для подсказок: читает только общедоступную модель `cf_unwrapper::meta::Config`.
+struct MetaConfig<'a> {
+    cfg: &'a Config,
+}
+
+impl MetaConfig<'_> {
+    fn item(&self, class: &str, name: &str) -> Option<Item> {
+        self.cfg
+            .groups
+            .iter()
+            .find(|g| g.class == class)?
+            .items
+            .iter()
+            .find(|i| i.header.name.eq_ignore_ascii_case(name))
+            .cloned()
+    }
+    /// Ключ записи модуля объекта по классу/имени/роли (для перехода к определению).
+    fn module_entry(&self, class: &str, name: &str, role: &str) -> Option<String> {
+        let owner = self.item(class, name)?.header.id;
+        all_nodes(self.cfg)
+            .into_iter()
+            .find(|(i, _)| i.header.id == owner)
+            .and_then(|(i, _)| {
+                i.files
+                    .iter()
+                    .find(|(_, r)| *r == role)
+                    .map(|(e, _)| e.clone())
+            })
+    }
+}
+
+impl crate::bsl::nav::Meta for MetaConfig<'_> {
+    fn names(&self, class: &str) -> Vec<String> {
+        self.cfg
+            .groups
+            .iter()
+            .find(|g| g.class == class)
+            .map(|g| g.items.iter().map(|i| i.header.name.clone()).collect())
+            .unwrap_or_default()
+    }
+    fn module(&self, class: &str, name: &str, role: &str) -> Option<String> {
+        let owner = self.item(class, name)?.header.id;
+        all_nodes(self.cfg)
+            .into_iter()
+            .find(|(i, _)| i.header.id == owner)
+            .and_then(|(i, _)| {
+                i.files
+                    .iter()
+                    .find(|(_, r)| *r == role)
+                    .and_then(|(e, _)| self.cfg.module_text(e))
+            })
+    }
+    fn fields(&self, class: &str, name: &str, ts: Option<&str>) -> Vec<(&'static str, String)> {
+        let item = match self.item(class, name) {
+            Some(i) => i,
+            None => return Vec::new(),
+        };
+        match ts {
+            None => item
+                .children
+                .iter()
+                .map(|c| (c.kind, c.header.name.clone()))
+                .collect(),
+            Some(ts) => item
+                .children
+                .iter()
+                .find(|c| c.kind == "TabularSection" && c.header.name.eq_ignore_ascii_case(ts))
+                .map(|c| {
+                    c.children
+                        .iter()
+                        .map(|x| (x.kind, x.header.name.clone()))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        }
+    }
+    fn id(&self, class: &str, name: &str) -> Option<String> {
+        self.item(class, name).map(|i| i.header.id)
+    }
+    fn title(&self, class: &str) -> String {
+        cf_unwrapper::meta::CLASSES
+            .iter()
+            .find(|(_, xml, _, _)| *xml == class)
+            .map(|(_, _, group, _)| group.to_string())
+            .unwrap_or_else(|| class.to_string())
+    }
 }
