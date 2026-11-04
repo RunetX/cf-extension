@@ -17,6 +17,8 @@ pub struct Model {
     config: Option<Config>,
     source: Option<String>,
     revision: u64,
+    session_id: u64,
+    module_versions: std::collections::HashMap<String, u64>,
     dirty: bool,
     xml_source: bool,
 }
@@ -34,7 +36,7 @@ fn text<'a>(params: &'a Value, name: &str) -> Result<&'a str> {
 }
 impl Model {
     pub fn state(&self) -> Value {
-        json!({"loaded":self.config.is_some(),"sourcePath":self.source,"dirty":self.dirty,"revision":self.revision})
+        json!({"loaded":self.config.is_some(),"sourcePath":self.source,"dirty":self.dirty,"revision":self.revision,"sessionId":self.session_id})
     }
     fn cfg(&self) -> Result<&Config> {
         self.config
@@ -63,6 +65,30 @@ impl Model {
         }
         Ok(())
     }
+    fn module(&self, p: &Value) -> Result<Value> {
+        let session = p
+            .get("sessionId")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| bad("sessionId: требуется целое число"))?;
+        if session != self.session_id {
+            return Err((
+                -32002,
+                "Конфигурация сменилась; документ старой сессии".into(),
+            ));
+        }
+        let cfg = self.cfg()?;
+        let id = text(p, "id")?;
+        let mut info = modules(cfg)
+            .into_iter()
+            .find(|m| m["id"] == id)
+            .ok_or_else(|| bad("Неизвестный или недоступный модуль"))?;
+        info["text"] = json!(cfg
+            .module_text(id)
+            .ok_or_else(|| format_error("Модуль не читается"))?);
+        info["version"] = json!(self.module_versions.get(id).copied().unwrap_or(0));
+        info["sessionId"] = json!(self.session_id);
+        Ok(info)
+    }
     pub fn call(&mut self, method: &str, p: &Value) -> Result<Value> {
         if !p.is_object() {
             return Err(bad("params must be an object"));
@@ -76,6 +102,8 @@ impl Model {
                 self.guard(p)?;
                 let path = text(p, "path")?;
                 let cfg = open(Path::new(path)).map_err(format_error)?;
+                self.session_id += 1;
+                self.module_versions.clear();
                 self.xml_source = is_xml(Path::new(path));
                 self.config = Some(cfg);
                 self.source = Some(path.into());
@@ -90,6 +118,47 @@ impl Model {
                 self.dirty = false;
                 self.revision += 1;
                 Ok(self.state())
+            }
+            "model.modules" => {
+                let cfg = self.cfg()?;
+                let owner = p
+                    .get("ownerId")
+                    .map(|v| v.as_str().ok_or_else(|| bad("ownerId: требуется строка")))
+                    .transpose()?;
+                if let Some(owner) = owner {
+                    item(cfg, owner)?;
+                }
+                Ok(json!(modules(cfg)
+                    .into_iter()
+                    .filter(|m| owner.is_none_or(|id| m["ownerId"] == id))
+                    .collect::<Vec<_>>()))
+            }
+            "model.module" => self.module(p),
+            "model.setModule" => {
+                let before = self.module(p)?;
+                let version = p
+                    .get("version")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| bad("version: требуется целое число"))?;
+                if before["version"] != version {
+                    return Err((-32002, "Модуль изменился; сохранение отклонено".into()));
+                }
+                let id = text(p, "id")?;
+                let value = text(p, "text")?;
+                let mut staged = Config::open(&self.cfg()?.save()).map_err(format_error)?;
+                staged.set_module_text(id, value).map_err(format_error)?;
+                let checked = Config::open(&staged.save()).map_err(format_error)?;
+                let expected = value.replace("\r\n", "\n").replace('\n', "\r\n");
+                if checked.module_text(id).as_deref() != Some(expected.as_str()) {
+                    return Err(format_error(
+                        "Библиотека не сохранила модуль; модель не изменена",
+                    ));
+                }
+                self.config = Some(checked);
+                self.module_versions.insert(id.to_string(), version + 1);
+                self.dirty = true;
+                self.revision += 1;
+                Ok(json!({"module":self.module(p)?,"state":self.state()}))
             }
             "model.tree" => {
                 let cfg = self.cfg()?;
@@ -529,4 +598,21 @@ fn export(cfg: &Config, path: &Path) -> std::result::Result<(), String> {
         let _ = fs::remove_dir_all(&tmp);
     }
     result
+}
+
+/// Only entries enumerated by the format library and readable in the current model.
+pub fn modules(cfg: &Config) -> Vec<Value> {
+    cfg.module_entries()
+        .into_iter()
+        .filter_map(|(id, label)| {
+            cfg.module_text(&id)?;
+            let (owner, role) = all_nodes(cfg).into_iter().find_map(|(i, _)| {
+                i.files
+                    .iter()
+                    .find(|(entry, role)| entry == &id && cf_unwrapper::meta::is_module_role(role))
+                    .map(|(_, role)| (i.header.id.clone(), *role))
+            })?;
+            Some(json!({"id":id,"ownerId":owner,"role":role,"label":label}))
+        })
+        .collect()
 }

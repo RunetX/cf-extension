@@ -108,6 +108,7 @@ fn serve() -> Result<(), String> {
             && [
                 "model.open",
                 "model.setProperty",
+                "model.setModule",
                 "model.save",
                 "model.close",
             ]

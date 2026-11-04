@@ -3,8 +3,18 @@ import * as path from 'node:path';
 import { RpcClient } from './client';
 import { InitializeResult, ModelNode, ModelState, PropertyResult } from './protocol';
 import { MetadataTree, PropertyPalette } from './navigator';
+import { ModuleDocuments } from './moduleDocuments';
+import { ModuleInfo, ModuleDocument } from './protocol';
 import { TreeIcons } from './treeIcons';
 export interface ExtensionApi {
+    request<T>(method: string, params?: unknown): Promise<T>;
+    onNotification(listener: (method: string, params: unknown) => void): vscode.Disposable;
+    onState(listener: (state: ModelState) => void): vscode.Disposable;
+    readonly documents: ModuleDocuments;
+    openModule(id: string): Promise<vscode.TextDocument>;
+    modules(ownerId?: string): Promise<ModuleInfo[]>;
+    module(id: string, sessionId: number): Promise<ModuleDocument>;
+    setModule(id: string, sessionId: number, version: number, text: string): Promise<{module: ModuleDocument; state: ModelState}>;
     open(path: string): Promise<ModelState>;
     tree(parentId?: string): Promise<ModelNode[]>;
     node(id: string): Promise<ModelNode>;
@@ -24,7 +34,10 @@ interface Destination {
 }
 export async function activate(context: vscode.ExtensionContext): Promise<ExtensionApi> {
     let client: RpcClient | undefined;
-    let current: ModelState = { loaded: false, sourcePath: null, dirty: false, revision: 0 };
+    let current: ModelState = { loaded: false, sourcePath: null, dirty: false, revision: 0, sessionId: 0 };
+    const notifications = new Set<(method: string, params: unknown) => void>();
+    const states = new vscode.EventEmitter<ModelState>();
+    let selectionToken = 0;
     let selected: ModelNode | undefined;
     const output = vscode.window.createOutputChannel('Конструктор');
     context.subscriptions.push(output);
@@ -32,6 +45,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Extens
     await icons.reload();
     const update = (state: ModelState): ModelState => { if (state.revision >= current.revision) {
         current = state;
+        states.fire({...state});
         tree.refresh();
         treeView.title = state.dirty ? 'Метаданные ●' : 'Метаданные';
         // A message suppresses viewsWelcome, including its Open Configuration button.
@@ -52,13 +66,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<Extens
         const configured = vscode.workspace.getConfiguration('cfExtension').get<string>('serverPath');
         const candidate = new RpcClient(configured || path.join(context.extensionPath, 'bin', process.platform === 'win32' ? 'model-server.exe' : 'model-server'));
         client = candidate;
-        current = { loaded: false, sourcePath: null, dirty: false, revision: 0 };
+        current = { loaded: false, sourcePath: null, dirty: false, revision: 0, sessionId: 0 };
         candidate.onDiagnostic = message => output.append(message);
         candidate.onNotification = (method, params) => { if (client === candidate && method === 'model.changed') {
             update(params as ModelState);
-        } };
+        } if (client === candidate) for (const listener of notifications) listener(method,params); };
         candidate.onExit = error => { if (client === candidate) {
             client = undefined;
+            documents.disconnect();
             update({ ...current, loaded: false, sourcePath: null, dirty: false });
             void vscode.window.showErrorMessage(error.message);
         } };
@@ -78,12 +93,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<Extens
     } return client; }
     async function request<T>(method: string, params: unknown = {}): Promise<T> { return (await connect()).request<T>(method, params); }
     const api: ExtensionApi = {
-        async open(filePath) { return update(await request<ModelState>('model.open', { path: filePath })); },
+        request,
+        onNotification(listener) { notifications.add(listener); return new vscode.Disposable(() => { notifications.delete(listener); }); },
+        onState(listener) { return states.event(listener); },
+        get documents() { return documents; },
+        openModule(id) { return documents.openModule(id); },
+        modules(ownerId) { return request('model.modules',ownerId ? {ownerId} : {}); },
+        module(id,sessionId) { return request('model.module',{id,sessionId}); },
+        async setModule(id,sessionId,version,text) { const result=await request<{module:ModuleDocument;state:ModelState}>('model.setModule',{id,sessionId,version,text}); update(result.state); return result; },
+        async open(filePath) { const state=update(await request<ModelState>('model.open',{path:filePath})); await documents.retire(); return state; },
         tree(parentId) { return request('model.tree', parentId ? { parentId } : {}); }, node(id) { return request('model.node', { id }); }, properties(id) { return request('model.properties', { id }); },
         async setProperty(id, name, value, revision) { return update(await request<ModelState>('model.setProperty', { id, name, value, revision })); }, search(query) { return request('model.search', { query }); }, references(id) { return request('model.references', { id }); }, composition(id) { return request('model.composition', { id }); },
-        async save(filePath, format) { return update(await request<ModelState>('model.save', { ...(filePath ? { path: filePath } : {}), ...(format ? { format } : {}), revision: current.revision })); },
-        async close(discardChanges) { return update(await request<ModelState>('model.close', { discardChanges })); }, state() { return { ...current }; }, dispose() { const old = client; client = undefined; old?.dispose(); }
+        async save(filePath, format) { await documents.flush(); return update(await request<ModelState>('model.save', { ...(filePath ? { path: filePath } : {}), ...(format ? { format } : {}), revision: current.revision })); },
+        async close(discardChanges) { if (documents.dirtyDocuments().length && !discardChanges) throw new Error('Есть несохранённые изменения модулей'); const state=update(await request<ModelState>('model.close', { discardChanges })); await documents.retire(); return state; }, state() { return { ...current }; }, dispose() { const old = client; client = undefined; old?.dispose(); }
     };
+    const documents = new ModuleDocuments(api);
+    context.subscriptions.push(documents,states);
     const tree = new MetadataTree(api, icons);
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => { if (event.affectsConfiguration('cfExtension.platformPath')) { void icons.reload().then(() => tree.refresh()); } }));
     const treeView = vscode.window.createTreeView('cfExtension.metadata', { treeDataProvider: tree, showCollapseAll: true });
@@ -91,12 +116,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<Extens
     context.subscriptions.push(tree, treeView, { dispose: () => api.dispose() }, vscode.window.registerWebviewViewProvider('cfExtension.properties', palette));
     async function select(value?: ModelNode | string): Promise<void> { const id = typeof value === 'string' ? value : value?.id; if (!id) {
         return;
-    } const token = current.revision; const node = typeof value === 'object' ? value : await api.node(id); if (node.kind === 'group') {
+    } const token = ++selectionToken; const revision = current.revision; const node = typeof value === 'object' ? value : await api.node(id); if (node.kind === 'group') {
         return;
-    } if (node.kind === 'record') {
+    } if (node.kind === 'module') { return; } if (token !== selectionToken || revision !== current.revision) return; if (node.kind === 'record') {
         void vscode.window.showInformationMessage('Ссылка найдена в записи контейнера; отдельная палитра для неё недоступна.');
         return;
-    } selected = node; await vscode.commands.executeCommand('cfExtension.properties.focus'); if (current.revision !== token) {
+    } selected = node; await vscode.commands.executeCommand('cfExtension.properties.focus'); if (token !== selectionToken || current.revision !== revision) {
         return;
     } await palette.select(id); }
     async function chooseSave(destination?: Destination): Promise<ModelState | undefined> { if (destination) {
@@ -107,7 +132,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Extens
         const folder = await vscode.window.showSaveDialog({ title: 'Новый или пустой XML-каталог', saveLabel: 'Экспортировать XML' });
         return folder ? api.save(folder.fsPath, 'xml') : undefined;
     } const file = await vscode.window.showSaveDialog({ title: 'Сохранить бинарный файл', filters: { 'Конфигурация 1С': ['cf', 'cfe', 'epf'] } }); return file ? api.save(file.fsPath, 'binary') : undefined; }
-    async function dirtyGuard(): Promise<boolean> { if (!current.dirty) {
+    async function dirtyGuard(): Promise<boolean> { if (!current.dirty && !documents.dirtyDocuments().length) {
         return true;
     } const answer = await vscode.window.showWarningMessage('Есть несохранённые изменения конфигурации.', { modal: true }, 'Сохранить', 'Отбросить', 'Отмена'); if (answer === 'Сохранить') {
         if (current.sourcePath && !isXmlSource(current.sourcePath)) {
@@ -136,7 +161,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<Extens
         filePath = files?.[0]?.fsPath;
     } if (!filePath || !await dirtyGuard()) {
         return;
-    } const state = update(await request<ModelState>('model.open', { path: filePath, discardChanges: current.dirty })); selected = undefined; palette.clear(); return state; });
+    } const state = update(await request<ModelState>('model.open', { path: filePath, discardChanges: current.dirty })); await documents.retire(); selectionToken++; selected = undefined; palette.clear(); return state; });
+    register('openModule', async (value: ModelNode | string) => { const id=typeof value === 'string' ? value : value.id; const doc=await api.openModule(id.startsWith('module:') ? id.slice(7) : id); await vscode.window.showTextDocument(doc,{preview:false}); return doc; });
     register('select', select);
     treeView.onDidChangeSelection(event => { if (event.selection[0]) {
         void select(event.selection[0]).catch(e => vscode.window.showErrorMessage(String(e)));
@@ -147,7 +173,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Extens
     register('saveAs', chooseSave);
     register('close', async () => { if (!await dirtyGuard()) {
         return;
-    } return api.close(current.dirty); });
+    } return api.close(true); });
     register('search', async (query?: string) => { query = query ?? await vscode.window.showInputBox({ title: 'Поиск объекта по имени или синониму', prompt: 'Поиск метаданных без учёта регистра' }); if (query === undefined) {
         return;
     } if (!query.trim()) {

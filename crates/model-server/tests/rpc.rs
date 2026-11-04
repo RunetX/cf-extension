@@ -728,6 +728,7 @@ fn configurator_hierarchy_and_parent_navigation() {
         .as_array()
         .unwrap()
         .iter()
+        .filter(|n| n["kind"] != "module")
         .map(|n| n["label"].as_str().unwrap())
         .collect();
     assert_eq!(
@@ -745,15 +746,30 @@ fn configurator_hierarchy_and_parent_navigation() {
         s.ok("model.node", json!({"id":"group:Catalog"}))["parentId"],
         root["id"]
     );
+    // Формы появились в фикстуре; пустая группа «Команды» сохраняет смысл проверки.
     let forms = collections
         .as_array()
         .unwrap()
         .iter()
         .find(|n| n["label"] == "Формы")
         .unwrap();
-    assert_eq!(forms["hasChildren"], false);
+    assert_eq!(forms["hasChildren"], true);
+    assert_eq!(
+        s.ok("model.tree", json!({"parentId":forms["id"]}))
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let commands = collections
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["label"] == "Команды")
+        .unwrap();
+    assert_eq!(commands["hasChildren"], false);
     assert!(s
-        .ok("model.tree", json!({"parentId":forms["id"]}))
+        .ok("model.tree", json!({"parentId":commands["id"]}))
         .as_array()
         .unwrap()
         .is_empty());
@@ -781,4 +797,128 @@ fn configurator_hierarchy_and_parent_navigation() {
     let canonical = dir.canonicalize().unwrap();
     assert!(canonical.starts_with(std::env::temp_dir().canonicalize().unwrap()));
     std::fs::remove_dir_all(canonical).unwrap();
+}
+#[test]
+fn modules_are_owned_versioned_and_transactional() {
+    let dir = std::env::temp_dir().join(format!("cf-extension-modules-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("modules.cf");
+    assert!(server_command()
+        .args(["--generate-fixture", path.to_str().unwrap()])
+        .status()
+        .unwrap()
+        .success());
+    let cfg = cf_unwrapper::meta::Config::open(&std::fs::read(&path).unwrap()).unwrap();
+    let owner = cfg
+        .groups
+        .iter()
+        .flat_map(|g| &g.items)
+        .find(|i| i.kind == "Catalog")
+        .unwrap()
+        .header
+        .id
+        .clone();
+
+    std::fs::write(&path, cfg.save()).unwrap();
+    let mut rpc = Session::new();
+    let state = rpc.ok("model.open", json!({"path":path}));
+    assert_eq!(state["sessionId"], 1);
+    let modules = rpc.ok("model.modules", json!({"ownerId":owner}));
+    let id = modules[0]["id"].clone();
+    assert_eq!(modules[0]["ownerId"], owner);
+    assert_eq!(modules[0]["role"], "ObjectModule");
+    let doc = rpc.ok("model.module", json!({"id":id,"sessionId":1}));
+    assert_eq!(doc["version"], 0);
+    let nodes = rpc.ok("model.tree", json!({"parentId":owner}));
+    assert!(nodes
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|n| n["kind"] == "module" && n["parentId"] == owner));
+    rpc.ok(
+        "model.setProperty",
+        json!({"id":owner,"name":"Comment","value":"independent","revision":state["revision"]}),
+    );
+    let applied = rpc.ok(
+        "model.setModule",
+        json!({"id":id,"sessionId":1,"version":0,"text":"Процедура Ошибка(\n// можно сохранить"}),
+    );
+    assert_eq!(applied["module"]["version"], 1);
+    assert_eq!(applied["state"]["dirty"], true);
+    for params in [
+        json!({"id":id,"sessionId":1,"version":0,"text":"stale"}),
+        json!({"id":id,"sessionId":0,"version":1,"text":"foreign"}),
+        json!({"id":owner,"sessionId":1,"version":1,"text":"record"}),
+    ] {
+        assert!(rpc.call("model.setModule", params).get("error").is_some());
+    }
+    assert_eq!(
+        rpc.ok("model.module", json!({"id":id,"sessionId":1})),
+        applied["module"]
+    );
+    rpc.ok(
+        "model.save",
+        json!({"revision":applied["state"]["revision"]}),
+    );
+    rpc.ok("model.close", json!({}));
+    assert_eq!(rpc.ok("model.open", json!({"path":path}))["sessionId"], 2);
+    assert!(rpc
+        .call("model.module", json!({"id":id,"sessionId":1}))
+        .get("error")
+        .is_some());
+    assert!(
+        rpc.ok("model.module", json!({"id":id,"sessionId":2}))["text"]
+            .as_str()
+            .unwrap()
+            .contains("можно сохранить")
+    );
+    rpc.ok("model.close", json!({}));
+
+    // EPF: модуль корня обработки доступен тем же RPC (форма покрыта CF-фикстурой:
+    // у add_form есть эталоны только справочника и документа).
+    let epf_path = dir.join("modules.epf");
+    let epf_bytes = cf_unwrapper::xml::imp::new_external("ModulesEPF").unwrap();
+    let mut epf = cf_unwrapper::meta::Config::open(&epf_bytes).unwrap();
+    let change =
+        cf_unwrapper::xml::edit::new_module(&epf, &epf.root_id.clone(), "ObjectModule").unwrap();
+    cf_unwrapper::xml::edit::apply(&mut epf, &[change], false).unwrap();
+    for (entry, _) in epf.module_entries() {
+        epf.set_module_text(
+            &entry,
+            "// EPF module\r\nПроцедура Внешняя() Экспорт\r\nКонецПроцедуры",
+        )
+        .unwrap();
+    }
+    std::fs::write(&epf_path, epf.save()).unwrap();
+    assert_eq!(
+        rpc.ok("model.open", json!({"path":epf_path}))["sessionId"],
+        3
+    );
+    let epf_modules = rpc.ok("model.modules", json!({}));
+    let epf_list = epf_modules.as_array().unwrap();
+    assert_eq!(epf_list.len(), 1);
+    assert_eq!(epf_list[0]["role"], "ObjectModule");
+    let epf_root = epf_list[0]["ownerId"].clone();
+    let root_module = epf_modules
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["role"] == "ObjectModule")
+        .unwrap()["id"]
+        .clone();
+    let epf_doc = rpc.ok("model.module", json!({"id":root_module,"sessionId":3}));
+    assert!(epf_doc["text"].as_str().unwrap().contains("EPF module"));
+    let epf_applied = rpc.ok(
+        "model.setModule",
+        json!({"id":root_module,"sessionId":3,"version":0,"text":"Процедура Внешняя() Экспорт\r\nКонецПроцедуры\r\n"}),
+    );
+    assert_eq!(epf_applied["module"]["version"], 1);
+    let epf_nodes = rpc.ok("model.tree", json!({"parentId":epf_root}));
+    assert!(epf_nodes
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|n| n["kind"] == "module" && n["role"] == "ObjectModule"));
+    drop(rpc);
+    std::fs::remove_dir_all(dir).unwrap();
 }

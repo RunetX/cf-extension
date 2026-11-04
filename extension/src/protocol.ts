@@ -3,6 +3,7 @@ export interface ModelState {
     sourcePath: string | null;
     dirty: boolean;
     revision: number;
+    sessionId: number;
 }
 export interface ModelNode {
     id: string;
@@ -29,3 +30,6 @@ export interface InitializeResult {
     protocolVersion: number;
     capabilities: Record<string, boolean>;
 }
+
+export interface ModuleInfo { id: string; ownerId: string; role: string; label: string; }
+export interface ModuleDocument extends ModuleInfo { text: string; version: number; sessionId: number; }

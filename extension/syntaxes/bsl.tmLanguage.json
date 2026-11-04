@@ -1,0 +1,43 @@
+{
+  "name": "BSL",
+  "scopeName": "source.bsl",
+  "uuid": "6f1c3a42-b510-4d7e-9a1c-0b5c0de01031",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#directives" },
+    { "include": "#numbers" },
+    { "include": "#keywords" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "name": "comment.line.double-slash.bsl", "match": "//.*$" }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.bsl",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            { "name": "constant.character.escape.bsl", "match": "\"\"" }
+          ]
+        }
+      ]
+    },
+    "directives": {
+      "name": "keyword.control.directive.bsl",
+      "match": "(?i)#[ \\t]*(Область|КонецОбласти|Если|ИначеЕсли|Иначе|КонецЕсли|Вставка|КонецВставки|Удаление|КонецУдаления|Region|EndRegion|If|ElsIf|Else|EndIf|Insert|EndInsert|Delete|EndDelete)\\b"
+    },
+    "numbers": {
+      "name": "constant.numeric.bsl",
+      "match": "\\b\\d+(\\.\\d+)?\\b"
+    },
+    "keywords": {
+      "name": "keyword.control.bsl",
+      "match": "(?i)\\b(Процедура|КонецПроцедуры|Функция|КонецФункции|Экспорт|Асинх|Ждать|Перем|Возврат|Если|ИначеЕсли|Иначе|Тогда|КонецЕсли|Цикл|Для|По|Пока|Из|КонецЦикла|Попытка|Исключение|КонецПопытки|ВызватьИсключение|Прервать|Продолжить|И|Или|Не|ДобавитьОбработчик|УдалитьОбработчик|Новый|Знач|Истина|Ложь|Неопределено|NULL|Выполнить|Оценить|Procedure|EndProcedure|Function|EndFunction|Export|Async|Await|Var|Return|If|ElsIf|Else|Then|EndIf|Do|For|To|While|In|EndDo|Try|Except|EndTry|Raise|Break|Continue|And|Or|Not|AddHandler|RemoveHandler|New|Val|True|False|Undefined|Null|Execute|Eval)\\b"
+    }
+  }
+}

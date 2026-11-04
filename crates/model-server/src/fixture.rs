@@ -29,6 +29,35 @@ pub fn generate(path: &Path) -> Result<(), String> {
             let (_, changes) = xml::edit::add_child(&cfg, &mut names, &id, kind)?;
             xml::edit::apply(&mut cfg, &changes, false)?;
         }
+        for (owner, roles) in [
+            (
+                cfg.root_id.clone(),
+                vec![
+                    "OrdinaryApplicationModule",
+                    "ManagedApplicationModule",
+                    "SessionModule",
+                    "ExternalConnectionModule",
+                ],
+            ),
+            (id.clone(), vec!["ObjectModule", "ManagerModule"]),
+        ] {
+            for role in roles {
+                let change = xml::edit::new_module(&cfg, &owner, role)?;
+                xml::edit::apply(&mut cfg, &[change], false)?;
+            }
+        }
+        names = xml::edit::Names::new(&cfg);
+        let (_, changes) = xml::edit::add(&cfg, &mut names, "CommonModule")?;
+        xml::edit::apply(&mut cfg, &changes, false)?;
+        names = xml::edit::Names::new(&cfg);
+        let (_, changes) = xml::edit::add_form(&cfg, &mut names, &id, "", false, None, None)?;
+        xml::edit::apply(&mut cfg, &changes, false)?;
+        for (entry, _) in cfg.module_entries() {
+            cfg.set_module_text(
+                &entry,
+                "// Synthetic module\r\nProcedure Example() Export\r\nEndProcedure",
+            )?;
+        }
         fs::write(path, cfg.save()).map_err(|e| e.to_string())
     })();
     let _ = fs::remove_dir_all(&dir);

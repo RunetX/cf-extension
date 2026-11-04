@@ -16,6 +16,7 @@ def inspect_vsix(path):
         binary = 'model-server.exe' if os.name == 'nt' else 'model-server'
         required = {'extension/package.json', 'extension/out/src/extension.js',
                     'extension/out/src/client.js', 'extension/out/src/navigator.js',
+                    'extension/syntaxes/bsl.tmLanguage.json',
                     'extension/media/constructor.svg', 'extension/media/logo-k.png', 'extension/bin/' + binary,
                     'extension/LICENSE.txt', 'extension/readme.md'}
         missing = required - names

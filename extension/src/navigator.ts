@@ -22,7 +22,8 @@ export class MetadataTree implements vscode.TreeDataProvider<ModelNode> {
         item.id = n.id;
         item.tooltip = n.typeLabel ? `${n.label} — ${n.typeLabel}` : n.label;
         item.contextValue = n.kind === 'group' ? 'group' : n.kind === 'record' ? 'record' : 'metadata';
-        if (n.kind !== 'group') item.command = { command: 'cfExtension.select', title: 'Свойства', arguments: [n] };
+        if (n.kind === 'module') item.command = {command:'cfExtension.openModule',title:'Открыть модуль',arguments:[n]};
+        else if (n.kind !== 'group') item.command = { command: 'cfExtension.select', title: 'Свойства', arguments: [n] };
         item.iconPath = this.icons.get(n);
         return item;
     }
@@ -103,7 +104,8 @@ export class PropertyPalette implements vscode.WebviewViewProvider {
     }
     catch (error) {
         this.busy = false;
-        void this.view?.webview.postMessage({ type: 'editError', text: String(error) });
+        if (this.selected === snapshot.id) void this.view?.webview.postMessage({ type: 'editError', text: String(error) });
+        await this.refresh();
     } }
 }
 function validValue(p: ModelProperty, v: unknown): boolean { return p.kind === 'boolean' ? typeof v === 'boolean' : p.kind === 'number' ? typeof v === 'number' && Number.isFinite(v) : p.kind === 'enum' ? typeof v === 'string' && !!p.options?.includes(v) : p.kind === 'string' && typeof v === 'string'; }

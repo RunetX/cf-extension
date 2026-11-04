@@ -1,8 +1,8 @@
 {
   "name": "cf-extension",
   "displayName": "Конструктор 1С",
-  "description": "Дерево метаданных 1С, поиск объектов и редактирование свойств в VS Code.",
-  "version": "0.2.2",
+  "description": "Дерево метаданных 1С, поиск объектов, редактирование свойств и модулей в VS Code.",
+  "version": "0.3.0",
   "publisher": "RunetX",
   "license": "MIT",
   "repository": {
@@ -23,6 +23,25 @@
     "onCommand:cfExtension.open"
   ],
   "contributes": {
+    "languages": [
+      {
+        "id": "bsl",
+        "aliases": [
+          "BSL",
+          "Модуль 1С"
+        ],
+        "mimetypes": [
+          "text/x-bsl"
+        ]
+      }
+    ],
+    "grammars": [
+      {
+        "language": "bsl",
+        "scopeName": "source.bsl",
+        "path": "./syntaxes/bsl.tmLanguage.json"
+      }
+    ],
     "commands": [
       {
         "title": "Конструктор: Открыть конфигурацию",
