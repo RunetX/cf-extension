@@ -210,7 +210,7 @@ pub fn from_structural(item: &Item, parent: Option<&str>) -> Value {
     });
     with_parent(item, parent.as_deref())
 }
-pub fn object_node(cfg: &Config, item: &Item) -> Value {
+pub fn object_node(cfg: &Config, item: &Item, mods: &[Value]) -> Value {
     let parent = if item.header.id == cfg.root.header.id {
         None
     } else if let Some((_, Some(owner))) = find(cfg, &item.header.id) {
@@ -219,17 +219,14 @@ pub fn object_node(cfg: &Config, item: &Item) -> Value {
         Some(format!("group:{}", item.kind))
     };
     let mut node = with_parent(item, parent.as_deref());
-    if crate::model::modules(cfg)
-        .iter()
-        .any(|m| m["ownerId"] == item.header.id)
-    {
+    if mods.iter().any(|m| m["ownerId"] == item.header.id) {
         node["hasChildren"] = json!(true);
     }
     node
 }
-pub fn children(cfg: &Config, parent: Option<&str>) -> Result<Vec<Value>, String> {
+pub fn children(cfg: &Config, parent: Option<&str>, mods: &[Value]) -> Result<Vec<Value>, String> {
     let Some(parent) = parent else {
-        return Ok(vec![object_node(cfg, &cfg.root)]);
+        return Ok(vec![object_node(cfg, &cfg.root, mods)]);
     };
     if parent == cfg.root.header.id && cfg.root.kind == "Configuration" {
         let mut nodes = vec![group("common", "Общие", "Common", parent, true)];
@@ -242,7 +239,7 @@ pub fn children(cfg: &Config, parent: Option<&str>) -> Result<Vec<Value>, String
                 nodes.push(class_node(cfg, g.class));
             }
         }
-        nodes.extend(module_nodes(cfg, parent));
+        nodes.extend(module_nodes(mods, parent));
         return Ok(nodes);
     }
     if parent == "common" && cfg.root.kind == "Configuration" {
@@ -263,7 +260,7 @@ pub fn children(cfg: &Config, parent: Option<&str>) -> Result<Vec<Value>, String
             vec![]
         };
         if let Some(g) = cfg.groups.iter().find(|g| g.class == class) {
-            nodes.extend(g.items.iter().map(|i| object_node(cfg, i)));
+            nodes.extend(g.items.iter().map(|i| object_node(cfg, i, mods)));
         }
         return Ok(nodes);
     }
@@ -277,7 +274,7 @@ pub fn children(cfg: &Config, parent: Option<&str>) -> Result<Vec<Value>, String
             .children
             .iter()
             .filter(|c| c.kind == kind)
-            .map(|c| object_node(cfg, c))
+            .map(|c| object_node(cfg, c, mods))
             .collect());
     }
     let (item, _) = find(cfg, parent).ok_or("Неизвестный объект")?;
@@ -293,26 +290,39 @@ pub fn children(cfg: &Config, parent: Option<&str>) -> Result<Vec<Value>, String
             )
         })
         .collect();
-    nodes.extend(module_nodes(cfg, parent));
+    nodes.extend(module_nodes(mods, parent));
     Ok(nodes)
 }
-fn module_nodes(cfg: &Config, owner: &str) -> Vec<Value> {
-    crate::model::modules(cfg).into_iter().filter(|m|m["ownerId"]==owner).map(|m|json!({"id":format!("module:{}",m["id"].as_str().unwrap()),"label":m["label"],"kind":"module","role":m["role"],"metadataKind":m["role"],"parentId":owner,"hasChildren":false})).collect()
+fn module_nodes(mods: &[Value], owner: &str) -> Vec<Value> {
+    mods.iter()
+        .filter(|m| m["ownerId"] == owner)
+        .map(|m| {
+            json!({
+                "id": format!("module:{}", m["id"].as_str().unwrap()),
+                "label": m["label"],
+                "kind": "module",
+                "role": m["role"],
+                "metadataKind": m["role"],
+                "parentId": owner,
+                "hasChildren": false
+            })
+        })
+        .collect()
 }
-pub fn node(cfg: &Config, id: &str) -> Result<Value, String> {
+pub fn node(cfg: &Config, id: &str, mods: &[Value]) -> Result<Value, String> {
     if let Some(entry) = id.strip_prefix("module:") {
-        return crate::model::modules(cfg)
-            .into_iter()
+        return mods
+            .iter()
             .find(|m| m["id"] == entry)
             .and_then(|m| {
-                module_nodes(cfg, m["ownerId"].as_str()?)
+                module_nodes(mods, m["ownerId"].as_str()?)
                     .into_iter()
                     .find(|n| n["id"] == id)
             })
             .ok_or("Неизвестный модуль".into());
     }
     if let Some((item, _)) = find(cfg, id) {
-        return Ok(object_node(cfg, item));
+        return Ok(object_node(cfg, item, mods));
     }
     if id == "common" && cfg.root.kind == "Configuration" {
         return Ok(group(
@@ -335,7 +345,7 @@ pub fn node(cfg: &Config, id: &str) -> Result<Value, String> {
     }
     if let Some(rest) = id.strip_prefix("children:") {
         if let Some((owner, _)) = rest.split_once(':') {
-            return children(cfg, Some(owner))?
+            return children(cfg, Some(owner), mods)?
                 .into_iter()
                 .find(|n| n["id"] == id)
                 .ok_or("Неизвестная группа".into());

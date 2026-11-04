@@ -8,6 +8,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
+    sync::Arc,
 };
 type Error = (i32, String);
 type Result<T> = std::result::Result<T, Error>;
@@ -23,6 +24,9 @@ pub struct Model {
     xml_source: bool,
     analysis: crate::bsl::analysis::Session,
     notes: Vec<Value>,
+    // Список модулей дорог (чтение текста каждого модуля); считается один раз
+    // на конфигурацию, сбрасывается вместе с config.
+    modules_cache: Option<Arc<Vec<Value>>>,
 }
 fn bad(message: impl Into<String>) -> Error {
     (-32602, message.into())
@@ -56,6 +60,18 @@ impl Model {
         self.config
             .as_ref()
             .ok_or((-32000, "Откройте конфигурацию".into()))
+    }
+    /// Список модулей текущей конфигурации: строится один раз, живёт до смены config.
+    fn modules_cached(&mut self) -> Result<Arc<Vec<Value>>> {
+        if self.modules_cache.is_none() {
+            let built = modules(self.cfg()?);
+            self.modules_cache = Some(Arc::new(built));
+        }
+        Ok(self
+            .modules_cache
+            .as_ref()
+            .expect("только что построен")
+            .clone())
     }
     /// Исходящие уведомления (textDocument/publishDiagnostics): забирает цикл serve после ответа.
     pub fn take_notes(&mut self) -> Vec<Value> {
@@ -295,6 +311,7 @@ impl Model {
                 self.module_versions.clear();
                 self.xml_source = is_xml(Path::new(path));
                 self.config = Some(cfg);
+                self.modules_cache = None;
                 self.source = Some(path.into());
                 self.dirty = false;
                 self.revision += 1;
@@ -304,6 +321,7 @@ impl Model {
             "model.close" => {
                 self.guard(p)?;
                 self.config = None;
+                self.modules_cache = None;
                 self.source = None;
                 self.dirty = false;
                 self.revision += 1;
@@ -311,6 +329,7 @@ impl Model {
                 Ok(self.state())
             }
             "model.modules" => {
+                let mods = self.modules_cached()?;
                 let cfg = self.cfg()?;
                 let owner = p
                     .get("ownerId")
@@ -319,9 +338,10 @@ impl Model {
                 if let Some(owner) = owner {
                     item(cfg, owner)?;
                 }
-                Ok(json!(modules(cfg)
-                    .into_iter()
+                Ok(json!(mods
+                    .iter()
                     .filter(|m| owner.is_none_or(|id| m["ownerId"] == id))
+                    .cloned()
                     .collect::<Vec<_>>()))
             }
             "model.module" => self.module(p),
@@ -346,25 +366,29 @@ impl Model {
                     ));
                 }
                 self.config = Some(checked);
+                self.modules_cache = None;
                 self.module_versions.insert(id.to_string(), version + 1);
                 self.dirty = true;
                 self.revision += 1;
                 Ok(json!({"module":self.module(p)?,"state":self.state()}))
             }
             "model.tree" => {
+                let mods = self.modules_cached()?;
                 let cfg = self.cfg()?;
                 if p.get("parentId").is_some_and(|v| !v.is_string()) {
                     return Err(bad("parentId must be a string"));
                 }
                 Ok(json!(crate::tree::children(
                     cfg,
-                    p.get("parentId").and_then(Value::as_str)
+                    p.get("parentId").and_then(Value::as_str),
+                    &mods
                 )
                 .map_err(bad)?))
             }
             "model.node" => {
+                let mods = self.modules_cached()?;
                 let cfg = self.cfg()?;
-                crate::tree::node(cfg, text(p, "id")?).map_err(bad)
+                crate::tree::node(cfg, text(p, "id")?, &mods).map_err(bad)
             }
             "model.composition" => {
                 let cfg = self.cfg()?;
@@ -389,6 +413,7 @@ impl Model {
                     .collect::<Vec<_>>()))
             }
             "model.references" => {
+                let mods = self.modules_cached()?;
                 let cfg = self.cfg()?;
                 let id = text(p, "id")?;
                 item(cfg, id)?;
@@ -413,7 +438,7 @@ impl Model {
                     };
                     if let Ok(i) = item(cfg, &owner) {
                         if ids.insert(i.header.id.clone()) {
-                            nodes.push(crate::tree::object_node(cfg, i));
+                            nodes.push(crate::tree::object_node(cfg, i, &mods));
                         }
                     } else if ids.insert(entry.clone()) {
                         nodes.push(json!({"id":format!("record:{entry}"),"label":xml::edit::whose(cfg,&entry),"kind":"record","hasChildren":false}));
@@ -481,6 +506,7 @@ impl Model {
                     ));
                 }
                 self.config = Some(checked);
+                self.modules_cache = None;
                 self.dirty = true;
                 self.revision += 1;
                 Ok(self.state())
@@ -793,19 +819,90 @@ fn export(cfg: &Config, path: &Path) -> std::result::Result<(), String> {
 
 /// Only entries enumerated by the format library and readable in the current model.
 pub fn modules(cfg: &Config) -> Vec<Value> {
-    cfg.module_entries()
+    // Один проход по дереву: владелец берётся из текущего узла. Наличие текста
+    // модуля проверяется параллельно — это почти вся стоимость на больших cf.
+    fn walk(
+        cfg: &Config,
+        item: &Item,
+        path: &mut Vec<String>,
+        out: &mut Vec<(String, String, String, String)>,
+    ) {
+        path.push(if item.header.name.is_empty() {
+            item.header.id.clone()
+        } else {
+            item.header.name.clone()
+        });
+        for (entry, role) in item
+            .files
+            .iter()
+            .filter(|(_, role)| cf_unwrapper::meta::is_module_role(role))
+        {
+            out.push((
+                entry.clone(),
+                role.to_string(),
+                format!("{}.{}", path.join("."), cf_unwrapper::meta::role_ru(role)),
+                item.header.id.clone(),
+            ));
+        }
+        for child in &item.children {
+            walk(cfg, child, path, out);
+        }
+        path.pop();
+    }
+    let mut found = Vec::new();
+    walk(cfg, &cfg.root, &mut Vec::new(), &mut found);
+    for group in &cfg.groups {
+        let singular = cf_unwrapper::meta::CLASSES
+            .iter()
+            .find(|c| c.1 == group.class)
+            .map(|c| c.3)
+            .unwrap_or(&group.class);
+        for item in &group.items {
+            walk(cfg, item, &mut vec![singular.to_string()], &mut found);
+        }
+    }
+    let keep = text_flags(cfg, &found);
+    found
         .into_iter()
-        .filter_map(|(id, label)| {
-            cfg.module_text(&id)?;
-            let (owner, role) = all_nodes(cfg).into_iter().find_map(|(i, _)| {
-                i.files
-                    .iter()
-                    .find(|(entry, role)| entry == &id && cf_unwrapper::meta::is_module_role(role))
-                    .map(|(_, role)| (i.header.id.clone(), *role))
-            })?;
-            Some(json!({"id":id,"ownerId":owner,"role":role,"label":label}))
+        .zip(keep)
+        .filter(|(_, keep)| *keep)
+        .map(|((entry, role, label, owner), _)| {
+            json!({"id": entry, "ownerId": owner, "role": role, "label": label})
         })
         .collect()
+}
+
+/// Параллельная проверка наличия текста модуля; порядок соответствует входу.
+fn text_flags(cfg: &Config, modules: &[(String, String, String, String)]) -> Vec<bool> {
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(8);
+    if threads < 2 || modules.len() < 512 {
+        return modules
+            .iter()
+            .map(|(entry, _, _, _)| cfg.module_text(entry).is_some())
+            .collect();
+    }
+    let chunk = modules.len().div_ceil(threads);
+    let mut flags = vec![false; modules.len()];
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for (slot, chunk_flags) in flags.chunks_mut(chunk).enumerate() {
+            let start = slot * chunk;
+            let entries = &modules[start..start + chunk_flags.len()];
+            handles.push(scope.spawn(move || {
+                entries
+                    .iter()
+                    .map(|(entry, _, _, _)| cfg.module_text(entry).is_some())
+                    .collect::<Vec<bool>>()
+            }));
+        }
+        for (chunk_flags, handle) in flags.chunks_mut(chunk).zip(handles) {
+            chunk_flags.copy_from_slice(&handle.join().expect("поток текста модуля"));
+        }
+    });
+    flags
 }
 
 /// Адаптер метаданных для подсказок: читает только общедоступную модель `cf_unwrapper::meta::Config`.
