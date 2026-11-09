@@ -10,12 +10,16 @@ export async function run(): Promise<void> {
         assert.equal(vscode.workspace.getConfiguration('cfExtension').get('serverPath'), '', 'packaged smoke must use the bundled default server');
         assert.equal(path.resolve(extension.extensionPath).toLowerCase(), path.resolve(process.env.CF_EXTENSION_PACKAGE_DIR).toLowerCase());
     }
-    const api = await extension.activate();
+    const openCommand = extension.packageJSON.contributes.commands.find((c: { command: string }) => c.command === 'cfExtension.open');
+    assert.equal(openCommand?.title, 'Конструктор: Открыть конфигурацию', 'open command has a searchable Russian title');
+    const fixture = process.env.CF_EXTENSION_FIXTURE!;
+    // Exercise command activation, not an explicit extension.activate() shortcut.
+    await vscode.commands.executeCommand('cfExtension.open', fixture);
+    assert.ok(extension.isActive, 'open command activates the extension');
+    const api = extension.exports;
     try {
         const commands = await vscode.commands.getCommands(true);
         assert.ok(commands.includes('cfExtension.select'), 'native navigator select command is registered');
-        const fixture = process.env.CF_EXTENSION_FIXTURE!;
-        await vscode.commands.executeCommand('cfExtension.open', fixture);
         assert.equal(api.state().loaded, true);
         const roots = await api.tree();
         assert.ok(roots.some(n => n.label === 'NavigatorSynthetic'));

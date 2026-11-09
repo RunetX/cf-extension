@@ -2,7 +2,7 @@
   "name": "cf-extension",
   "displayName": "Конструктор 1С",
   "description": "Дерево метаданных 1С, поиск объектов, редактирование свойств и модулей в VS Code.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "RunetX",
   "license": "MIT",
   "repository": {
