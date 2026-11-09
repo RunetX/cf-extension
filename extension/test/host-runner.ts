@@ -24,6 +24,11 @@ async function main(): Promise<void> {
         const environment: NodeJS.ProcessEnv = { ...process.env, CF_EXTENSION_FIXTURE: fixture };
         delete environment.ELECTRON_RUN_AS_NODE;
         const args = [workspace, '--extensionDevelopmentPath=' + (process.env.CF_EXTENSION_PACKAGE_DIR || path.resolve(root, 'extension')), '--extensionTestsPath=' + path.resolve(__dirname, 'host-smoke.js'), '--user-data-dir', profile, '--extensions-dir', path.join(temp, 'extensions'), '--disable-workspace-trust', '--disable-crash-reporter', '--skip-welcome', '--skip-release-notes', '--disable-extensions'];
+        // GitHub's isolated Linux runner cannot use the downloaded Electron SUID helper.
+        // This affects only the test Host, never the installed extension or normal local runs.
+        if (process.platform === 'linux' && process.env.GITHUB_ACTIONS === 'true') {
+            args.push('--no-sandbox');
+        }
         await new Promise<void>((resolve, reject) => {
             const host = spawn(executable, args, { env: environment, windowsHide: true, shell: false, stdio: 'inherit' });
             const timeout = setTimeout(() => { host.kill(); reject(new Error('Extension Host timeout (120 seconds)')); }, 120000);
